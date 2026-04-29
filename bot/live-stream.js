@@ -16,7 +16,9 @@
 
 import { analyze } from './coach.js';
 import { send, isEnabled, notifyAnalysis, notifyInfo } from './notify.js';
+import { teachAnalysis } from './education.js';
 import { disconnect } from '../src/connection.js';
+import * as chart from '../src/core/chart.js';
 
 function parseArgs(argv) {
   const out = {};
@@ -34,11 +36,15 @@ const args = parseArgs(process.argv.slice(2));
 const CONFIG = {
   intervalSec: Number(args['--interval']  ?? 60),
   riskDollars: Number(args['--risk']      ?? 100),
-  minScore:    Number(args['--min-score'] ?? 7),
-  targetRR:    Number(args['--target-rr'] ?? 2),
+  minScore:    Number(args['--min-score'] ?? 6.5),
+  targetRR:    Number(args['--target-rr'] ?? 1.5),
   silentNoop:  '--silent-noop' in args,
-  changesOnly: '--changes-only' in args,
+  changesOnly: !('--no-changes-only' in args),  // ON by default — Telegram only on state change
   once:        '--once' in args,
+  live:        '--live' in args,                 // tight polling: 2s quote, deep analysis on price move
+  livePollSec: Number(args['--live-poll'] ?? 2), // quote check every 2s in --live
+  movePct:     Number(args['--move-pct'] ?? 0.0015), // trigger deep analysis on 0.15% move
+  teach:       !('--no-teach' in args),
 };
 
 let _prevHash = null;
@@ -51,7 +57,10 @@ function logOk(s)   { console.log(`\x1b[2m${ts()}\x1b[0m \x1b[32m✓\x1b[0m ${s}
 function logWarn(s) { console.log(`\x1b[2m${ts()}\x1b[0m \x1b[33m⚠\x1b[0m ${s}`); }
 function logErr(s)  { console.log(`\x1b[2m${ts()}\x1b[0m \x1b[31m✗\x1b[0m ${s}`); }
 
-async function tick() {
+// Track last analyzed price for live-mode change detection
+let _lastAnalyzedPrice = null;
+
+async function runDeepAnalysis() {
   let result;
   try {
     result = await analyze({
@@ -61,20 +70,20 @@ async function tick() {
     });
   } catch (e) {
     logErr(`Analysis failed: ${e.message}`);
-    return;
+    return null;
   }
 
   const o = result.output;
-  logInfo(`${o.ticker} ${o.timeframe}  •  ${o.decision}  •  score ${o.setupScore}`);
+  logInfo(`${o.ticker} ${o.timeframe}  •  ${o.decision}  •  score ${o.setupScore}  •  $${o.currentPrice.toFixed ? o.currentPrice.toFixed(4) : o.currentPrice}`);
+  _lastAnalyzedPrice = o.currentPrice;
 
   // Skip silent-noop
   if (CONFIG.silentNoop && o.decision === 'NO TRADE') {
     logInfo('Silent: NO TRADE skipped');
-    return;
+    return result;
   }
 
   // Dedupe — only Telegram on material change
-  // State hash = decision + score bucket
   const scoreBucket = Math.round(o.setupScore);
   const hash = `${o.decision}|${scoreBucket}`;
 
@@ -82,12 +91,23 @@ async function tick() {
     const sinceMs = Date.now() - _prevAt;
     if (sinceMs < FORCED_REFRESH_MS) {
       logInfo('No state change — skip Telegram');
-      return;
+      return result;
     }
     logInfo('5-min refresh interval reached — sending');
   }
 
-  const sent = await notifyAnalysis(result);
+  // Build message — append teach block if enabled
+  let msg;
+  if (CONFIG.teach) {
+    const lessonText = teachAnalysis(result);
+    // Cap teach block at 1500 chars so the full Telegram fits
+    const trimmedLesson = lessonText.length > 1500
+      ? lessonText.slice(0, 1500) + '\n\n_(...trimmed; run `node bot/coach.js` for full lesson)_'
+      : lessonText;
+    msg = (await import('./notify.js')).formatAnalysisForTelegram(result) + '\n\n' + trimmedLesson;
+  }
+
+  const sent = msg ? await send(msg) : await notifyAnalysis(result);
   if (sent) {
     logOk(`Sent to Telegram (${o.decision})`);
     _prevHash = hash;
@@ -95,7 +115,47 @@ async function tick() {
   } else {
     logWarn('Send failed');
   }
+  return result;
 }
+
+/**
+ * Live-mode tick: cheap quote check.
+ * Only runs deep analysis if price moved more than --move-pct since last deep run.
+ */
+async function liveQuoteTick() {
+  try {
+    const state = await chart.getState();
+    // Use chart price as our "quote" — cheap CDP read, no full bar pull
+    const price = state.last_price ?? null;
+    if (!Number.isFinite(price)) return;
+
+    if (_lastAnalyzedPrice == null) {
+      // First tick — run deep analysis to seed
+      await runDeepAnalysis();
+      return;
+    }
+
+    const moveAbs = Math.abs(price - _lastAnalyzedPrice);
+    const movePct = moveAbs / _lastAnalyzedPrice;
+
+    if (movePct >= CONFIG.movePct) {
+      logInfo(`Price moved ${(movePct * 100).toFixed(3)}% — re-analyzing`);
+      await runDeepAnalysis();
+    } else {
+      // Stale-refresh: even with no move, force deep analysis every 60s in live mode
+      const ageSec = (Date.now() - _prevAt) / 1000;
+      if (ageSec > 60) {
+        logInfo(`Stale refresh (${ageSec.toFixed(0)}s)`);
+        await runDeepAnalysis();
+      }
+    }
+  } catch (e) {
+    logErr(`Live tick error: ${e.message}`);
+  }
+}
+
+// Backwards-compat alias
+const tick = runDeepAnalysis;
 
 async function main() {
   console.log('\n━'.repeat(70));
@@ -118,7 +178,6 @@ async function main() {
     return;
   }
 
-  logInfo(`Polling every ${CONFIG.intervalSec}s — Ctrl+C to stop`);
   process.on('SIGINT', async () => {
     logInfo('Shutting down...');
     await notifyInfo('📡 Live Coach Stopped').catch(() => {});
@@ -126,10 +185,20 @@ async function main() {
     process.exit(0);
   });
 
-  setInterval(async () => {
-    try { await tick(); }
-    catch (e) { logErr(`Tick error: ${e.message}`); }
-  }, CONFIG.intervalSec * 1000);
+  if (CONFIG.live) {
+    // True LIVE mode: cheap quote check every N seconds; deep analysis only on price move
+    logInfo(`🔴 LIVE mode — quote every ${CONFIG.livePollSec}s, deep analysis on ${(CONFIG.movePct * 100).toFixed(2)}% move`);
+    setInterval(async () => {
+      try { await liveQuoteTick(); }
+      catch (e) { logErr(`Live tick error: ${e.message}`); }
+    }, CONFIG.livePollSec * 1000);
+  } else {
+    logInfo(`Polling every ${CONFIG.intervalSec}s — Ctrl+C to stop`);
+    setInterval(async () => {
+      try { await tick(); }
+      catch (e) { logErr(`Tick error: ${e.message}`); }
+    }, CONFIG.intervalSec * 1000);
+  }
 }
 
 main().catch(async e => {

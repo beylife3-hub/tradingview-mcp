@@ -46,6 +46,7 @@ import { extractKeyLevels, pickBestLevel, LEVEL_LABELS } from './levels.js';
 import { classifyRegime, regimeSummary, styleFor } from './regime.js';
 import { detectAll } from './setups.js';
 import { scoreSetup, verdictFromScore, applyStrictFilters } from './scoring.js';
+import { teachAnalysis, teachConcept, fullGlossary } from './education.js';
 
 // ─── CLI parsing ─────────────────────────────────────────────────────────────
 
@@ -70,6 +71,9 @@ const CONFIG = {
   minScore:   Number(args['--min-score'] ?? 6.5),  // loosened from 7 → 6.5 (TRADE threshold)
   targetRR:   Number(args['--target-rr'] ?? 1.5),  // loosened from 2 → 1.5 (still favorable)
   color:      !('--no-color' in args),
+  teach:      !('--no-teach' in args),              // education ON by default
+  glossary:   '--glossary' in args,
+  explain:    args['--explain'] ?? null,            // --explain VWAP
 };
 
 // ─── Terminal styling ────────────────────────────────────────────────────────
@@ -369,6 +373,12 @@ function printAnalysis(result) {
   // Strict-format block per user spec
   L.hdr('Strict Output Format');
   console.log(result.formatted);
+
+  // Education block — on by default, suppress with --no-teach
+  if (CONFIG.teach) {
+    L.hdr('📚 Today\'s Lesson');
+    console.log(teachAnalysis(result));
+  }
 }
 
 // ─── CLI entry point ─────────────────────────────────────────────────────────
@@ -376,6 +386,15 @@ function printAnalysis(result) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   (async () => {
     try {
+      // Education-only modes — don't need chart access
+      if (CONFIG.glossary) {
+        console.log(fullGlossary());
+        return;
+      }
+      if (CONFIG.explain) {
+        console.log(teachConcept(CONFIG.explain));
+        return;
+      }
       const result = await analyze();
       printAnalysis(result);
     } catch (e) {
