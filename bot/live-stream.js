@@ -19,6 +19,7 @@ import { send, isEnabled, notifyAnalysis, notifyInfo } from './notify.js';
 import { teachAnalysis } from './education.js';
 import { disconnect } from '../src/connection.js';
 import * as chart from '../src/core/chart.js';
+import * as data from '../src/core/data.js';
 
 function parseArgs(argv) {
   const out = {};
@@ -57,10 +58,12 @@ function logOk(s)   { console.log(`\x1b[2m${ts()}\x1b[0m \x1b[32m✓\x1b[0m ${s}
 function logWarn(s) { console.log(`\x1b[2m${ts()}\x1b[0m \x1b[33m⚠\x1b[0m ${s}`); }
 function logErr(s)  { console.log(`\x1b[2m${ts()}\x1b[0m \x1b[31m✗\x1b[0m ${s}`); }
 
-// Track last analyzed price for live-mode change detection
+// Track last analyzed price + time for live-mode change detection
 let _lastAnalyzedPrice = null;
+let _lastDeepAnalysisAt = 0;
 
 async function runDeepAnalysis() {
+  _lastDeepAnalysisAt = Date.now();   // mark BEFORE so even on failure we don't tight-loop
   let result;
   try {
     result = await analyze({
@@ -124,29 +127,31 @@ async function runDeepAnalysis() {
  */
 async function liveQuoteTick() {
   try {
-    const state = await chart.getState();
-    // Use chart price as our "quote" — cheap CDP read, no full bar pull
-    const price = state.last_price ?? null;
+    // Use getQuote() — cheap single-bar pull (much faster than 200-bar OHLCV)
+    const q = await data.getQuote();
+    const price = q?.last ?? q?.close ?? null;
     if (!Number.isFinite(price)) return;
 
     if (_lastAnalyzedPrice == null) {
-      // First tick — run deep analysis to seed
       await runDeepAnalysis();
       return;
     }
 
     const moveAbs = Math.abs(price - _lastAnalyzedPrice);
     const movePct = moveAbs / _lastAnalyzedPrice;
+    const sinceDeepSec = (Date.now() - _lastDeepAnalysisAt) / 1000;
 
     if (movePct >= CONFIG.movePct) {
-      logInfo(`Price moved ${(movePct * 100).toFixed(3)}% — re-analyzing`);
+      logInfo(`Price moved ${(movePct * 100).toFixed(3)}% ($${_lastAnalyzedPrice.toFixed(4)} → $${price.toFixed(4)}) — re-analyzing`);
+      await runDeepAnalysis();
+    } else if (sinceDeepSec > 60) {
+      // Stale refresh — even without movement, re-analyze every 60s
+      logInfo(`Stale refresh (${sinceDeepSec.toFixed(0)}s since last deep) — price flat at $${price.toFixed(4)}`);
       await runDeepAnalysis();
     } else {
-      // Stale-refresh: even with no move, force deep analysis every 60s in live mode
-      const ageSec = (Date.now() - _prevAt) / 1000;
-      if (ageSec > 60) {
-        logInfo(`Stale refresh (${ageSec.toFixed(0)}s)`);
-        await runDeepAnalysis();
+      // Heartbeat log every 30s of pure idle so user sees the bot is alive
+      if (sinceDeepSec > 30 && Math.floor(sinceDeepSec) % 10 === 0) {
+        logInfo(`💓 alive — price $${price.toFixed(4)} (move ${(movePct * 100).toFixed(3)}% < ${(CONFIG.movePct * 100).toFixed(2)}%)`);
       }
     }
   } catch (e) {
