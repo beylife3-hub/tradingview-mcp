@@ -304,15 +304,30 @@ export async function analyze({
       ? `Place stop at ${fmt.price(best.setup.invalidation)} BEFORE clicking buy. Take 50% off at T1, trail rest. Exit if 5 min after entry the trade hasn't moved your way.`
       : `Place stop at ${fmt.price(best.setup.invalidation)} BEFORE clicking sell. Cover 50% at T1, trail rest. Exit if 5 min after entry the trade hasn't moved your way.`;
   } else if (decision === 'WATCHLIST ONLY') {
-    entry = `Watch for ${best.setup.direction.toLowerCase()} confirmation`;
-    invalidation = best.setup.invalidation ? fmt.price(best.setup.invalidation) : '—';
+    // Show the actual trade structure even for WATCHLIST so user can act if they choose
+    entry        = fmt.price(best.setup.entry);
+    invalidation = fmt.price(best.setup.invalidation);
+    stop         = invalidation;
+    target1      = best.score.suggestedTarget1 ? fmt.price(best.score.suggestedTarget1) : '—';
+    target2      = best.score.suggestedTarget2 ? fmt.price(best.score.suggestedTarget2) : '—';
+
+    if (best.score.suggestedTarget1 && best.score.stopDist) {
+      const t1Dist = Math.abs(best.score.suggestedTarget1 - best.setup.entry);
+      const t2Dist = best.score.suggestedTarget2 ? Math.abs(best.score.suggestedTarget2 - best.setup.entry) : 0;
+      rewardRisk = `${(t1Dist / best.score.stopDist).toFixed(2)}:1 to T1${t2Dist ? ` / ${(t2Dist / best.score.stopDist).toFixed(2)}:1 to T2` : ''}`;
+      const sizing = calcPositionSize(best.setup.entry, best.setup.invalidation, riskDollars);
+      positionSize = `${sizing.shares} units  ($${sizing.notional.toFixed(2)} notional)  Max loss: $${sizing.maxLoss.toFixed(2)}`;
+    }
+
+    confidence = 'low-medium (B-grade setup)';
     reasons = best.score.components
-      .filter(c => c.score < c.max)
+      .sort((a,b) => (b.score / b.max) - (a.score / a.max))
       .slice(0, 3)
       .map(c => `${c.name} (${c.score}/${c.max}) — ${c.note}`);
-    mainRisk = 'Setup forming but not yet A+. Don\'t front-run it.';
-    finalInstruction = `Wait. Add to watchlist. Re-evaluate when score hits ${minScore}+ or setup invalidates.`;
-    confidence = 'low';
+    mainRisk = `B-grade setup — score ${best.score.score}/10 vs A+ target ${minScore}. Lower probability. Smaller size if you take it.`;
+    finalInstruction = best.setup.direction === 'LONG'
+      ? `Optional ${best.setup.direction} — wait for next bullish confirmation bar at ${fmt.price(best.setup.entry)} or above. Set stop at ${fmt.price(best.setup.invalidation)} BEFORE entering. Cut size in half vs A+ trades.`
+      : `Optional ${best.setup.direction} — wait for next bearish confirmation bar at ${fmt.price(best.setup.entry)} or below. Set stop at ${fmt.price(best.setup.invalidation)} BEFORE entering. Cut size in half vs A+ trades.`;
   } else {
     // NO TRADE
     if (best?.rejection) {

@@ -229,10 +229,13 @@ export function applyStrictFilters({
     // No hard rejection here.
   }
 
-  // Price extreme overextension only — was rejecting anything > 1.5×, now > 2.5×
-  const extComp = score.components.find(c => c.name === 'Not extended');
-  if (extComp && extComp.score === 0) {
-    reasons.push('Price extremely extended (>2.5× ATR) — chasing risk too high');
+  // Price extreme overextension — only enforced in conservative/balanced.
+  // YOLO and aggressive allow chasing extended moves at user's own risk.
+  if (profile !== 'yolo' && profile !== 'aggressive') {
+    const extComp = score.components.find(c => c.name === 'Not extended');
+    if (extComp && extComp.score === 0) {
+      reasons.push('Price extremely extended (>2.5× ATR) — chasing risk too high');
+    }
   }
 
   // Parabolic always rejects — capital protection (even YOLO)
