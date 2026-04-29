@@ -17,6 +17,7 @@
 import { analyze } from './coach.js';
 import { send, isEnabled, notifyAnalysis, notifyInfo } from './notify.js';
 import { teachAnalysis } from './education.js';
+import { drawAnalysis, clearBotShapes } from './draw-plan.js';
 import { disconnect } from '../src/connection.js';
 import * as chart from '../src/core/chart.js';
 import * as data from '../src/core/data.js';
@@ -46,6 +47,7 @@ const CONFIG = {
   livePollSec: Number(args['--live-poll'] ?? 2), // quote check every 2s in --live
   movePct:     Number(args['--move-pct'] ?? 0.0015), // trigger deep analysis on 0.15% move
   teach:       !('--no-teach' in args),
+  draw:        '--draw' in args,                  // draw BUY/SELL/STOP/T1 on chart every deep analysis
 };
 
 let _prevHash = null;
@@ -118,6 +120,16 @@ async function runDeepAnalysis() {
   } else {
     logWarn('Send failed');
   }
+
+  // Draw on chart if --draw enabled
+  if (CONFIG.draw) {
+    try {
+      const r = await drawAnalysis(result);
+      if (r.shapes > 0) logOk(`Drew on chart: ${r.drew} (${r.shapes} shapes)`);
+      else if (r.drew === 'cleared' && o.decision !== 'NO TRADE') logInfo('Cleared chart (no actionable plan)');
+    } catch (e) { logWarn(`Draw failed: ${e.message}`); }
+  }
+
   return result;
 }
 

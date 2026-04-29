@@ -47,6 +47,7 @@ import { classifyRegime, regimeSummary, styleFor } from './regime.js';
 import { detectAll } from './setups.js';
 import { scoreSetup, verdictFromScore, applyStrictFilters } from './scoring.js';
 import { teachAnalysis, teachConcept, fullGlossary } from './education.js';
+import { drawAnalysis, clearBotShapes } from './draw-plan.js';
 
 // ─── CLI parsing ─────────────────────────────────────────────────────────────
 
@@ -74,6 +75,7 @@ const CONFIG = {
   teach:      !('--no-teach' in args),              // education ON by default
   glossary:   '--glossary' in args,
   explain:    args['--explain'] ?? null,            // --explain VWAP
+  draw:       '--draw' in args,                      // draw analysis on TradingView chart
 };
 
 // ─── Terminal styling ────────────────────────────────────────────────────────
@@ -397,6 +399,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       }
       const result = await analyze();
       printAnalysis(result);
+      if (CONFIG.draw) {
+        const r = await drawAnalysis(result);
+        L.ok(`Drew on chart: ${r.drew} (${r.shapes} shapes)`);
+      }
     } catch (e) {
       L.err(`Fatal: ${e.message}`);
       console.error(e.stack);
