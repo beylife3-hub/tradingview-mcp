@@ -67,8 +67,8 @@ const CONFIG = {
   timeframe:  args['--tf']        ?? null,
   bars:       Number(args['--bars']      ?? 200),
   riskDollars: Number(args['--risk']     ?? 100),
-  minScore:   Number(args['--min-score'] ?? 7),    // ≥ 7 = TRADE
-  targetRR:   Number(args['--target-rr'] ?? 2),    // mandatory minimum
+  minScore:   Number(args['--min-score'] ?? 6.5),  // loosened from 7 → 6.5 (TRADE threshold)
+  targetRR:   Number(args['--target-rr'] ?? 1.5),  // loosened from 2 → 1.5 (still favorable)
   color:      !('--no-color' in args),
 };
 

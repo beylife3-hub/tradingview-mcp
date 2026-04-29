@@ -57,41 +57,53 @@ export function scoreSetup(setup, structure, levels, regime, bars, opts = {}) {
   components.push({ name: 'Trend alignment', score: s1, max: 2,
     note: s1 === 2 ? 'Full HTF + LTF aligned' : s1 === 1 ? 'Partial alignment' : 'Counter-trend' });
 
-  // ─── 2. Volume confirmation (0-2) ─────────────────────────────────────────
+  // ─── 2. Volume confirmation (0-2) — softer brackets ───────────────────────
   const recent = bars.slice(-21, -1);
   const avgVol = recent.reduce((s, b) => s + (b.volume || 0), 0) / Math.max(1, recent.length);
   const lastVol = last.volume || 0;
   const relVol = avgVol > 0 ? lastVol / avgVol : 1;
   let s2 = 0;
-  if (relVol >= 1.5) s2 = 2;
-  else if (relVol >= 1.0) s2 = 1;
+  if (relVol >= 1.5)      s2 = 2;
+  else if (relVol >= 1.0) s2 = 1.5;   // average vol now scores 1.5 (was 1)
+  else if (relVol >= 0.7) s2 = 1;     // even soft vol gets 1pt
+  else if (relVol >= 0.4) s2 = 0.5;
   raw += s2;
   components.push({ name: 'Volume confirmation', score: s2, max: 2,
     note: `Last bar vol ${relVol.toFixed(2)}× 20-bar avg` });
 
-  // ─── 3. Distance from key level (0-2) ─────────────────────────────────────
-  // Find nearest level in setup direction
+  // ─── 3. Distance from key level (0-2) — wider proximity window ────────────
   const allLevels = [...levels.resistance, ...levels.support];
-  const nearLevel = allLevels.find(l => Math.abs(l.distancePct) < 0.005);  // within 0.5%
+  // Try multiple proximity bands for partial credit
+  const nearTight  = allLevels.find(l => Math.abs(l.distancePct) < 0.005);  // within 0.5%
+  const nearMedium = allLevels.find(l => Math.abs(l.distancePct) < 0.01);   // within 1%
   let s3 = 0;
-  if (nearLevel && nearLevel.weight >= 3) s3 = 2;
-  else if (nearLevel && nearLevel.weight >= 2) s3 = 1;
+  if (nearTight && nearTight.weight >= 3) s3 = 2;
+  else if (nearTight && nearTight.weight >= 2) s3 = 1.5;
+  else if (nearTight) s3 = 1;
+  else if (nearMedium && nearMedium.weight >= 2) s3 = 0.5;
   raw += s3;
+  const nearLevel = nearTight ?? nearMedium;
   components.push({ name: 'Distance from level', score: s3, max: 2,
     note: nearLevel
       ? `At ${nearLevel.type} ${nearLevel.price.toFixed(2)} (${(nearLevel.distancePct * 100).toFixed(2)}% away, weight ${nearLevel.weight})`
       : 'Not at any major level — chasing risk' });
 
-  // ─── 4. Entry quality (0-2) ───────────────────────────────────────────────
-  // Reaction bar quality: close direction matches setup, close in correct half
+  // ─── 4. Entry quality (0-2) — softer reaction-bar gates ──────────────────
   const range = last.high - last.low;
   let s4 = 0;
   if (range > 0) {
     const closePos = (last.close - last.low) / range;
-    if (isLong && closePos >= 0.7 && last.close > last.open) s4 = 2;
-    else if (isLong && closePos >= 0.5 && last.close > last.open) s4 = 1;
-    else if (!isLong && closePos <= 0.3 && last.close < last.open) s4 = 2;
-    else if (!isLong && closePos <= 0.5 && last.close < last.open) s4 = 1;
+    if (isLong) {
+      if      (closePos >= 0.7 && last.close > last.open) s4 = 2;
+      else if (closePos >= 0.5 && last.close > last.open) s4 = 1.5;
+      else if (closePos >= 0.5)                            s4 = 1;     // bullish position even on doji/red
+      else if (last.close > last.open)                     s4 = 0.5;
+    } else {
+      if      (closePos <= 0.3 && last.close < last.open) s4 = 2;
+      else if (closePos <= 0.5 && last.close < last.open) s4 = 1.5;
+      else if (closePos <= 0.5)                            s4 = 1;
+      else if (last.close < last.open)                     s4 = 0.5;
+    }
   }
   raw += s4;
   components.push({ name: 'Entry quality', score: s4, max: 2,
@@ -118,8 +130,10 @@ export function scoreSetup(setup, structure, levels, regime, bars, opts = {}) {
     suggestedTarget2 = isLong ? setup.entry + targetDist     : setup.entry - targetDist;
   }
   let s5 = 0;
-  if (rrEstimate >= 3) s5 = 2;
-  else if (rrEstimate >= 2) s5 = 1;
+  if (rrEstimate >= 3)      s5 = 2;
+  else if (rrEstimate >= 2) s5 = 1.5;
+  else if (rrEstimate >= 1.5) s5 = 1;     // 1.5:1 now scores partial (was 0)
+  else if (rrEstimate >= 1.2) s5 = 0.5;
   raw += s5;
   components.push({ name: 'Reward/Risk', score: s5, max: 2,
     note: `Projected ${rrEstimate.toFixed(2)}:1 R:R to next major level` });
@@ -133,14 +147,15 @@ export function scoreSetup(setup, structure, levels, regime, bars, opts = {}) {
   components.push({ name: 'Structure clarity', score: s6, max: 1,
     note: `${regime.type} (confidence ${(regime.confidence * 100).toFixed(0)}%)` });
 
-  // ─── 7. Move not extended (0-1) ───────────────────────────────────────────
-  // Last 5-bar move vs 14-bar ATR — if > 1.5× ATR, overextended
+  // ─── 7. Move not extended (0-1) — finer extension gradient ────────────────
   const fiveAgo = bars[bars.length - 6]?.close ?? last.close;
   const lastLeg = Math.abs(last.close - fiveAgo);
   const atrRatio = atrNow > 0 ? lastLeg / atrNow : 0;
   let s7 = 0;
-  if (atrRatio < 1.0) s7 = 1;
-  else if (atrRatio < 1.5) s7 = 0.5;
+  if (atrRatio < 1.0)      s7 = 1;
+  else if (atrRatio < 1.5) s7 = 0.75;
+  else if (atrRatio < 2.0) s7 = 0.5;
+  else if (atrRatio < 2.5) s7 = 0.25;
   raw += s7;
   components.push({ name: 'Not extended', score: s7, max: 1,
     note: `Last 5-bar move ${atrRatio.toFixed(2)}× ATR ${atrRatio < 1.0 ? '(fresh)' : atrRatio < 1.5 ? '(neutral)' : '(extended — late)'}` });
@@ -162,14 +177,14 @@ export function scoreSetup(setup, structure, levels, regime, bars, opts = {}) {
 }
 
 /**
- * Verdict from score:
- *   ≥ 7  → tradeable (LONG / SHORT)
- *   5-6  → WATCHLIST
- *   < 5  → NO TRADE
+ * Verdict from score (loosened):
+ *   ≥ 6.5 → tradeable (LONG / SHORT)
+ *   ≥ 5   → WATCHLIST
+ *   < 5   → NO TRADE
  */
 export function verdictFromScore(score) {
-  if (score >= 7) return 'TRADE';
-  if (score >= 5) return 'WATCHLIST';
+  if (score >= 6.5) return 'TRADE';
+  if (score >= 5)   return 'WATCHLIST';
   return 'NO_TRADE';
 }
 
@@ -190,21 +205,23 @@ export function verdictFromScore(score) {
 export function applyStrictFilters({ setup, score, structure, regime, bars, accountRiskDollars }) {
   const reasons = [];
 
-  // R:R < 2:1
-  if (score.rrEstimate < 2) {
-    reasons.push(`R:R only ${score.rrEstimate.toFixed(2)}:1 — below 2:1 minimum`);
+  // R:R < 1.5:1 (loosened from 2:1 — capital still protected, more setups eligible)
+  if (score.rrEstimate < 1.5) {
+    reasons.push(`R:R only ${score.rrEstimate.toFixed(2)}:1 — below 1.5:1 minimum`);
   }
 
-  // Volume weak (component 2 = 0)
+  // Volume severely weak (no longer auto-rejects — only if extreme)
   const volComp = score.components.find(c => c.name === 'Volume confirmation');
   if (volComp && volComp.score === 0) {
-    reasons.push('Volume below average — no confirmation');
+    // Volume so dead that nothing should fire — but only reject if combined with
+    // other weakness. Just note it as a soft penalty in the score.
+    // No hard rejection here.
   }
 
-  // Price extended (component 7 = 0)
+  // Price extreme overextension only — was rejecting anything > 1.5×, now > 2.5×
   const extComp = score.components.find(c => c.name === 'Not extended');
   if (extComp && extComp.score === 0) {
-    reasons.push('Price extended — late entry');
+    reasons.push('Price extremely extended (>2.5× ATR) — chasing risk too high');
   }
 
   // Choppy or parabolic regime
@@ -215,11 +232,11 @@ export function applyStrictFilters({ setup, score, structure, regime, bars, acco
     reasons.push('Parabolic — wait for retracement');
   }
 
-  // Stop too wide for account
+  // Stop too wide for account (loosened from 5% to 7%)
   if (accountRiskDollars > 0 && score.stopDist > 0) {
     const stopDistPct = score.stopDist / setup.entry;
-    if (stopDistPct > 0.05) {
-      reasons.push(`Stop ${(stopDistPct * 100).toFixed(2)}% wide — too risky`);
+    if (stopDistPct > 0.07) {
+      reasons.push(`Stop ${(stopDistPct * 100).toFixed(2)}% wide — exceeds 7% sanity cap`);
     }
   }
 

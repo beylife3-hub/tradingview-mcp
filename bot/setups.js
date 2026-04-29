@@ -30,7 +30,7 @@ import { findSwingHighs, findSwingLows } from './levels.js';
  */
 export function detectSweepReclaim(bars, opts = {}) {
   const swingLookback = opts.swingLookback ?? 5;
-  const maxSweepATR  = opts.maxSweepATR  ?? 0.5;
+  const maxSweepATR  = opts.maxSweepATR  ?? 0.75;  // loosened from 0.5
 
   if (bars.length < 30) return null;
 
@@ -97,9 +97,9 @@ export function detectSweepReclaim(bars, opts = {}) {
  * Reject if price has been below VWAP within last 15 min ("not first touch").
  */
 export function detectVWAPBounce(bars, structure, opts = {}) {
-  const proximityATR = opts.proximityATR ?? 0.25;
-  const minTrendBars = opts.minTrendBars ?? 6;       // ~30 min on 5m
-  const minWickPct   = opts.minWickPct   ?? 0.60;
+  const proximityATR = opts.proximityATR ?? 0.4;     // loosened from 0.25
+  const minTrendBars = opts.minTrendBars ?? 4;       // loosened from 6 (~20 min on 5m)
+  const minWickPct   = opts.minWickPct   ?? 0.45;    // loosened from 0.60
 
   if (!structure.vwap || !Number.isFinite(structure.vwap)) return null;
   if (bars.length < 30) return null;
@@ -163,7 +163,7 @@ export function detectVWAPBounce(bars, structure, opts = {}) {
  * relative volume ≥ 1.5× the prior 20-bar avg.
  */
 export function detectORB(bars, levels, opts = {}) {
-  const minRelVol = opts.minRelVol ?? 1.5;
+  const minRelVol = opts.minRelVol ?? 1.2;  // loosened from 1.5
 
   if (!levels.orh || !levels.orl) return null;
   if (!Number.isFinite(levels.orRelVolume)) return null;
@@ -213,7 +213,7 @@ export function detectORB(bars, levels, opts = {}) {
  * back above EMA20). Mirror for downtrend.
  */
 export function detectTrendPullback(bars, levels, structure, opts = {}) {
-  const proximityATR = opts.proximityATR ?? 0.3;
+  const proximityATR = opts.proximityATR ?? 0.5;  // loosened from 0.3
   if (!levels.ema20 || !levels.ema50) return null;
   if (bars.length < 30) return null;
 
@@ -263,8 +263,9 @@ export function detectTrendPullback(bars, levels, structure, opts = {}) {
  * opposite half of range).
  */
 export function detectRangeReversal(bars, levels, opts = {}) {
-  const proximityPct = opts.proximityPct ?? 0.005;  // 0.5% of price
-  const minWickPct = opts.minWickPct ?? 0.55;
+  const proximityPct = opts.proximityPct ?? 0.008;  // loosened from 0.5% to 0.8%
+  const minWickPct = opts.minWickPct ?? 0.45;       // loosened from 0.55
+  const minTouches = opts.minTouches ?? 1;          // loosened from 2 (single-touch counts)
 
   if (bars.length < 20) return null;
   const last = bars[bars.length - 1];
@@ -272,9 +273,9 @@ export function detectRangeReversal(bars, levels, opts = {}) {
   if (range === 0) return null;
   const closePos = (last.close - last.low) / range;
 
-  // Support: tag a >= 2-touch support level, close in upper half
+  // Support: tag a multi-touch support level, close in upper half
   for (const lvl of levels.support.slice(0, 3)) {
-    if (lvl.touches < 2) continue;
+    if (lvl.touches < minTouches) continue;
     if (Math.abs(last.low - lvl.price) / lvl.price > proximityPct) continue;
     const lowerWick = (Math.min(last.open, last.close) - last.low) / range;
     if (lowerWick >= minWickPct && closePos > 0.55 && last.close > last.open) {
@@ -289,9 +290,9 @@ export function detectRangeReversal(bars, levels, opts = {}) {
     }
   }
 
-  // Resistance: tag a >= 2-touch resistance level, close in lower half
+  // Resistance: tag a multi-touch resistance level, close in lower half
   for (const lvl of levels.resistance.slice(0, 3)) {
-    if (lvl.touches < 2) continue;
+    if (lvl.touches < minTouches) continue;
     if (Math.abs(last.high - lvl.price) / lvl.price > proximityPct) continue;
     const upperWick = (last.high - Math.max(last.open, last.close)) / range;
     if (upperWick >= minWickPct && closePos < 0.45 && last.close < last.open) {
