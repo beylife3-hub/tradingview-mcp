@@ -177,14 +177,19 @@ export function scoreSetup(setup, structure, levels, regime, bars, opts = {}) {
 }
 
 /**
- * Verdict from score (loosened):
- *   ≥ 6.5 → tradeable (LONG / SHORT)
- *   ≥ 5   → WATCHLIST
- *   < 5   → NO TRADE
+ * Verdict from score, honoring profile-specific TRADE threshold.
+ *
+ *   conservative: TRADE ≥ 7,   WATCHLIST ≥ 5
+ *   balanced:     TRADE ≥ 6.5, WATCHLIST ≥ 5
+ *   aggressive:   TRADE ≥ 5.5, WATCHLIST ≥ 4
+ *   yolo:         TRADE ≥ 4.5, WATCHLIST ≥ 3
  */
-export function verdictFromScore(score) {
-  if (score >= 6.5) return 'TRADE';
-  if (score >= 5)   return 'WATCHLIST';
+export function verdictFromScore(score, opts = {}) {
+  const tradeT = opts.tradeThreshold ?? 6.5;
+  // WATCHLIST band scales with trade threshold (1pt below)
+  const watchT = Math.max(2, tradeT - 1.5);
+  if (score >= tradeT) return 'TRADE';
+  if (score >= watchT) return 'WATCHLIST';
   return 'NO_TRADE';
 }
 
@@ -202,12 +207,18 @@ export function verdictFromScore(score) {
  *   - Major news/event risk makes the chart unreliable
  *   - Setup depends on hope instead of structure
  */
-export function applyStrictFilters({ setup, score, structure, regime, bars, accountRiskDollars }) {
+export function applyStrictFilters({
+  setup, score, structure, regime, bars,
+  accountRiskDollars,
+  targetRR = 1.5,
+  stopCapPct = 7,
+  profile = 'balanced',
+}) {
   const reasons = [];
 
-  // R:R < 1.5:1 (loosened from 2:1 — capital still protected, more setups eligible)
-  if (score.rrEstimate < 1.5) {
-    reasons.push(`R:R only ${score.rrEstimate.toFixed(2)}:1 — below 1.5:1 minimum`);
+  // R:R below required (profile-aware)
+  if (score.rrEstimate < targetRR) {
+    reasons.push(`R:R only ${score.rrEstimate.toFixed(2)}:1 — below ${targetRR.toFixed(1)}:1 minimum`);
   }
 
   // Volume severely weak (no longer auto-rejects — only if extreme)
@@ -224,19 +235,21 @@ export function applyStrictFilters({ setup, score, structure, regime, bars, acco
     reasons.push('Price extremely extended (>2.5× ATR) — chasing risk too high');
   }
 
-  // Choppy or parabolic regime
-  if (regime.type === 'choppy') {
-    reasons.push('Choppy market — no clear edge');
-  }
+  // Parabolic always rejects — capital protection (even YOLO)
   if (regime.type === 'parabolic') {
     reasons.push('Parabolic — wait for retracement');
   }
+  // Choppy rejects in conservative/balanced; aggressive/yolo allow it
+  if (regime.type === 'choppy' && profile !== 'aggressive' && profile !== 'yolo') {
+    reasons.push('Choppy market — no clear edge');
+  }
 
-  // Stop too wide for account (loosened from 5% to 7%)
+  // Stop too wide (profile-aware)
   if (accountRiskDollars > 0 && score.stopDist > 0) {
     const stopDistPct = score.stopDist / setup.entry;
-    if (stopDistPct > 0.07) {
-      reasons.push(`Stop ${(stopDistPct * 100).toFixed(2)}% wide — exceeds 7% sanity cap`);
+    const cap = stopCapPct / 100;
+    if (stopDistPct > cap) {
+      reasons.push(`Stop ${(stopDistPct * 100).toFixed(2)}% wide — exceeds ${stopCapPct}% sanity cap`);
     }
   }
 

@@ -64,13 +64,31 @@ function parseArgs(argv) {
 }
 
 const args = parseArgs(process.argv.slice(2));
+
+// ─── Risk profile presets ────────────────────────────────────────────────────
+// Each profile sets multiple thresholds at once. CLI flags override individually.
+//   --conservative   only A+ setups, R:R ≥ 2, capital preservation focus
+//   default          balanced — loosened defaults
+//   --aggressive     fires on B-grade setups, R:R ≥ 1.2, more trades per day
+//   --yolo           experimental — anything that scores positive (NOT recommended)
+
+let PROFILE_DEFAULTS = { minScore: 6.5, targetRR: 1.5, stopCapPct: 7 };
+if ('--conservative' in args) PROFILE_DEFAULTS = { minScore: 7,   targetRR: 2,   stopCapPct: 5  };
+if ('--aggressive'   in args) PROFILE_DEFAULTS = { minScore: 5.5, targetRR: 1.2, stopCapPct: 10 };
+if ('--yolo'         in args) PROFILE_DEFAULTS = { minScore: 4.5, targetRR: 1.0, stopCapPct: 12 };
+
 const CONFIG = {
   symbol:     args['--symbol']    ?? null,
   timeframe:  args['--tf']        ?? null,
   bars:       Number(args['--bars']      ?? 200),
   riskDollars: Number(args['--risk']     ?? 100),
-  minScore:   Number(args['--min-score'] ?? 6.5),  // loosened from 7 → 6.5 (TRADE threshold)
-  targetRR:   Number(args['--target-rr'] ?? 1.5),  // loosened from 2 → 1.5 (still favorable)
+  minScore:   Number(args['--min-score'] ?? PROFILE_DEFAULTS.minScore),
+  targetRR:   Number(args['--target-rr'] ?? PROFILE_DEFAULTS.targetRR),
+  stopCapPct: Number(args['--stop-cap']  ?? PROFILE_DEFAULTS.stopCapPct),
+  profile:    '--conservative' in args ? 'conservative'
+            : '--aggressive'   in args ? 'aggressive'
+            : '--yolo'         in args ? 'yolo'
+            : 'balanced',
   color:      !('--no-color' in args),
   teach:      !('--no-teach' in args),              // education ON by default
   glossary:   '--glossary' in args,
@@ -174,7 +192,13 @@ function formatStrictOutput(out) {
 
 // ─── Main analysis ────────────────────────────────────────────────────────────
 
-export async function analyze({ riskDollars = CONFIG.riskDollars, minScore = CONFIG.minScore, targetRR = CONFIG.targetRR } = {}) {
+export async function analyze({
+  riskDollars = CONFIG.riskDollars,
+  minScore    = CONFIG.minScore,
+  targetRR    = CONFIG.targetRR,
+  stopCapPct  = CONFIG.stopCapPct,
+  profile     = CONFIG.profile,
+} = {}) {
   // 1. Read chart
   const state = await chart.getState();
   const symbol = state.symbol;
@@ -191,8 +215,12 @@ export async function analyze({ riskDollars = CONFIG.riskDollars, minScore = CON
   const levels    = extractKeyLevels(bars, structure);
   const regime    = classifyRegime(bars);
 
-  // 3. Detect setups
-  const setups = detectAll(bars, levels, structure);
+  // 3. Detect setups (pass profile-aware detector options)
+  const detectorOpts = {
+    aggressive: profile === 'aggressive' || profile === 'yolo',
+    yolo:       profile === 'yolo',
+  };
+  const setups = detectAll(bars, levels, structure, detectorOpts);
 
   // 4. Score each + pick best (only ones that pass strict filters)
   const scored = setups.map(setup => {
@@ -200,6 +228,7 @@ export async function analyze({ riskDollars = CONFIG.riskDollars, minScore = CON
     const rejection = applyStrictFilters({
       setup, score, structure, regime, bars,
       accountRiskDollars: riskDollars,
+      targetRR, stopCapPct, profile,
     });
     return { setup, score, rejection };
   });
@@ -207,7 +236,10 @@ export async function analyze({ riskDollars = CONFIG.riskDollars, minScore = CON
   // Pick the highest-scoring NON-rejected setup
   scored.sort((a, b) => b.score.score - a.score.score);
   const best   = scored.find(s => !s.rejection) ?? scored[0];
-  const verdict = best ? verdictFromScore(best.score.score) : 'NO_TRADE';
+  // Apply profile-aware verdict thresholds
+  const verdict = best
+    ? verdictFromScore(best.score.score, { tradeThreshold: minScore })
+    : 'NO_TRADE';
 
   // 5. Build output
   const bestLevel = pickBestLevel(levels, structure.price, structure.atr);

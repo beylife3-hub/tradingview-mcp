@@ -35,11 +35,20 @@ function parseArgs(argv) {
 }
 
 const args = parseArgs(process.argv.slice(2));
+
+// Profile presets — same as coach.js
+let PROFILE = { minScore: 6.5, targetRR: 1.5, stopCapPct: 7, profile: 'balanced' };
+if ('--conservative' in args) PROFILE = { minScore: 7,   targetRR: 2,   stopCapPct: 5,  profile: 'conservative' };
+if ('--aggressive'   in args) PROFILE = { minScore: 5.5, targetRR: 1.2, stopCapPct: 10, profile: 'aggressive'   };
+if ('--yolo'         in args) PROFILE = { minScore: 4.5, targetRR: 1.0, stopCapPct: 12, profile: 'yolo'         };
+
 const CONFIG = {
   intervalSec: Number(args['--interval']  ?? 60),
   riskDollars: Number(args['--risk']      ?? 100),
-  minScore:    Number(args['--min-score'] ?? 6.5),
-  targetRR:    Number(args['--target-rr'] ?? 1.5),
+  minScore:    Number(args['--min-score'] ?? PROFILE.minScore),
+  targetRR:    Number(args['--target-rr'] ?? PROFILE.targetRR),
+  stopCapPct:  Number(args['--stop-cap']  ?? PROFILE.stopCapPct),
+  profile:     PROFILE.profile,
   silentNoop:  '--silent-noop' in args,
   changesOnly: !('--no-changes-only' in args),  // ON by default — Telegram only on state change
   once:        '--once' in args,
@@ -70,8 +79,10 @@ async function runDeepAnalysis() {
   try {
     result = await analyze({
       riskDollars: CONFIG.riskDollars,
-      minScore: CONFIG.minScore,
-      targetRR: CONFIG.targetRR,
+      minScore:    CONFIG.minScore,
+      targetRR:    CONFIG.targetRR,
+      stopCapPct:  CONFIG.stopCapPct,
+      profile:     CONFIG.profile,
     });
   } catch (e) {
     logErr(`Analysis failed: ${e.message}`);

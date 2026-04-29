@@ -315,23 +315,52 @@ export function detectRangeReversal(bars, levels, opts = {}) {
 /**
  * Run all setup detectors. Returns array of detected setups (most specific first).
  * Caller picks the best one via setup-quality scoring.
+ *
+ * @param {object} opts
+ * @param {boolean} opts.aggressive - loosen detector thresholds further
+ * @param {boolean} opts.yolo       - extreme loosening (any whisper triggers)
  */
-export function detectAll(bars, levels, structure) {
+export function detectAll(bars, levels, structure, opts = {}) {
+  // Profile-aware option overrides
+  const sweep = opts.yolo
+    ? { maxSweepATR: 1.5 }
+    : opts.aggressive
+      ? { maxSweepATR: 1.0 }
+      : {};
+  const vwap = opts.yolo
+    ? { proximityATR: 0.6, minTrendBars: 2, minWickPct: 0.30 }
+    : opts.aggressive
+      ? { proximityATR: 0.5, minTrendBars: 3, minWickPct: 0.35 }
+      : {};
+  const orb = opts.yolo
+    ? { minRelVol: 0.8 }
+    : opts.aggressive
+      ? { minRelVol: 1.0 }
+      : {};
+  const pullback = opts.yolo
+    ? { proximityATR: 1.0 }
+    : opts.aggressive
+      ? { proximityATR: 0.7 }
+      : {};
+  const range = opts.yolo
+    ? { proximityPct: 0.015, minWickPct: 0.30, minTouches: 1 }
+    : opts.aggressive
+      ? { proximityPct: 0.012, minWickPct: 0.40, minTouches: 1 }
+      : {};
+
   const detectors = [
-    () => detectSweepReclaim(bars),
-    () => detectVWAPBounce(bars, structure),
-    () => detectORB(bars, levels),
-    () => detectTrendPullback(bars, levels, structure),
-    () => detectRangeReversal(bars, levels),
+    () => detectSweepReclaim(bars, sweep),
+    () => detectVWAPBounce(bars, structure, vwap),
+    () => detectORB(bars, levels, orb),
+    () => detectTrendPullback(bars, levels, structure, pullback),
+    () => detectRangeReversal(bars, levels, range),
   ];
   const results = [];
   for (const fn of detectors) {
     try {
       const r = fn();
       if (r) results.push(r);
-    } catch (e) {
-      // Detector failed silently — log but continue
-    }
+    } catch (e) { /* silent — detector failed */ }
   }
   return results;
 }
