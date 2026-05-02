@@ -48,6 +48,7 @@ import { detectAll } from './setups.js';
 import { scoreSetup, verdictFromScore, applyStrictFilters } from './scoring.js';
 import { teachAnalysis, teachConcept, fullGlossary } from './education.js';
 import { drawAnalysis, clearBotShapes } from './draw-plan.js';
+import { logPlanToJournal } from './journal.js';
 
 // ─── CLI parsing ─────────────────────────────────────────────────────────────
 
@@ -94,6 +95,7 @@ const CONFIG = {
   glossary:   '--glossary' in args,
   explain:    args['--explain'] ?? null,            // --explain VWAP
   draw:       '--draw' in args,                      // draw analysis on TradingView chart
+  log:        '--log'  in args,                      // append plan to journal when LONG/SHORT
 };
 
 // ─── Terminal styling ────────────────────────────────────────────────────────
@@ -449,6 +451,23 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       if (CONFIG.draw) {
         const r = await drawAnalysis(result);
         L.ok(`Drew on chart: ${r.drew} (${r.shapes} shapes)`);
+      }
+      if (CONFIG.log && (result.output.decision === 'LONG' || result.output.decision === 'SHORT')) {
+        const o = result.output;
+        const id = logPlanToJournal({
+          symbol: o.ticker, timeframe: o.timeframe,
+          setup: result.best?.setup?.name ?? '?',
+          direction: o.decision,
+          score: o.setupScore,
+          biasScore: result.bias?.score ?? null,
+          entry: result.best?.setup?.entry,
+          stop: result.best?.setup?.invalidation,
+          t1: result.best?.score?.suggestedTarget1,
+          t2: result.best?.score?.suggestedTarget2,
+          size: result.best ? Math.floor(CONFIG.riskDollars / Math.abs(result.best.setup.entry - result.best.setup.invalidation)) : null,
+          riskAmount: CONFIG.riskDollars,
+        });
+        L.ok(`Logged plan to journal as id ${id.slice(0,8)}`);
       }
     } catch (e) {
       L.err(`Fatal: ${e.message}`);
