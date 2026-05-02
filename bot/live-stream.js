@@ -388,9 +388,11 @@ async function main() {
   }
 }
 
-main().catch(async e => {
-  logErr(`Fatal: ${e.message}`);
-  console.error(e.stack);
-  await disconnect().catch(() => {});
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch(async e => {
+    logErr(`Fatal: ${e.message}`);
+    console.error(e.stack);
+    await disconnect().catch(() => {});
+    process.exit(1);
+  });
+}

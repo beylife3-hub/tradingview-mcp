@@ -102,8 +102,10 @@ async function main() {
   await disconnect().catch(() => {});
 }
 
-main().catch(async e => {
-  console.error('Fatal:', e.message);
-  await disconnect().catch(() => {});
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch(async e => {
+    console.error('Fatal:', e.message);
+    await disconnect().catch(() => {});
+    process.exit(1);
+  });
+}

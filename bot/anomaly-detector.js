@@ -13,8 +13,7 @@
  * Used as a strict-filter rejection: never trade through a black swan.
  */
 
-import { mean, stdev } from './backtest.js';
-import { atr } from './engine.js';
+import { atr, mean, stdev } from './engine.js';
 
 /**
  * Detect anomalies in the current bar vs the recent N-bar baseline.

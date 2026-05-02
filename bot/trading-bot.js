@@ -654,7 +654,9 @@ async function main() {
   }, CONFIG.intervalSec * 1000);
 }
 
-main().catch(err => {
-  log.error(`Fatal: ${err.message}`);
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch(err => {
+    log.error(`Fatal: ${err.message}`);
+    process.exit(1);
+  });
+}

@@ -64,7 +64,7 @@ To stop: `Ctrl+C` or `node bot/orchestrator.js --stop`
 ### Tier 5 — Polish
 - `scan.js` — multi-symbol watchlist scanner with Telegram digest
 - `daily-summary.js` — end-of-day Telegram recap
-- `dashboard.js` + `serve-dashboard.js` — static HTML report
+- `dashboard.js` — static HTML report (one-shot snapshot)
 - `quiz.js` — self-assessment mode
 
 ### Tier 6 — Top 1%

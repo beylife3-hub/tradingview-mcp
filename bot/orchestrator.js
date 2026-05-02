@@ -216,7 +216,7 @@ async function main() {
   }
 
   console.log(`\n${C.green}━━ ALL SYSTEMS LIVE ━━${C.reset}`);
-  console.log(`  Dashboard:        http://localhost:8765/`);
+  console.log(`  Dashboard:        http://localhost:8766/`);
   console.log(`  Phone control:    /help in Telegram`);
   console.log(`  Stop everything:  Ctrl+C   OR   node bot/orchestrator.js --stop`);
   console.log('');
@@ -240,4 +240,6 @@ async function main() {
   await new Promise(() => {});
 }
 
-main().catch(e => { console.error('Fatal:', e.message); process.exit(1); });
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch(e => { console.error('Fatal:', e.message); process.exit(1); });
+}

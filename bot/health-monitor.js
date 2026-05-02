@@ -100,7 +100,7 @@ function checkDiskSpace() {
   }
 }
 
-async function checkDashboardServer(port = 8765) {
+async function checkDashboardServer(port = 8766) {
   return new Promise(resolve => {
     const r = request(`http://127.0.0.1:${port}/`, { method: 'HEAD' }, res => {
       resolve({ ok: res.statusCode === 200, info: `dashboard HTTP ${res.statusCode}` });
@@ -199,4 +199,6 @@ async function main() {
   }, INTERVAL_SEC * 1000);
 }
 
-main().catch(e => { console.error('Fatal:', e.message); process.exit(1); });
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch(e => { console.error('Fatal:', e.message); process.exit(1); });
+}

@@ -27,7 +27,7 @@
  *    likely as more participants come in.
  */
 
-import { mean, stdev } from './backtest.js';
+import { mean, stdev } from './engine.js';
 
 // ─── Cumulative Volume Delta (CVD) ───────────────────────────────────────────
 

@@ -43,7 +43,7 @@ import { disconnect } from '../src/connection.js';
 
 import { ema, atr, rsi, computeVWAP, fmt } from './engine.js';
 import { extractKeyLevels, pickBestLevel, LEVEL_LABELS } from './levels.js';
-import { classifyRegime, regimeSummary, styleFor } from './regime.js';
+import { classifyRegime, regimeSummary } from './regime.js';
 import { detectAll } from './setups.js';
 import { scoreSetup, verdictFromScore, applyStrictFilters } from './scoring.js';
 import { teachAnalysis, teachConcept, fullGlossary } from './education.js';

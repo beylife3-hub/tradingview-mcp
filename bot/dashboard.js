@@ -218,10 +218,12 @@ new Chart(document.getElementById('scores').getContext('2d'), {
 </body>
 </html>`;
 
-writeFileSync(OUT_PATH, html);
-console.log(`✓ Dashboard written to ${OUT_PATH}`);
+if (import.meta.url === `file://${process.argv[1]}`) {
+  writeFileSync(OUT_PATH, html);
+  console.log(`✓ Dashboard written to ${OUT_PATH}`);
 
-if (SHOULD_OPEN) {
-  spawn('open', [OUT_PATH], { detached: true, stdio: 'ignore' }).unref();
-  console.log('✓ Opened in browser');
+  if (SHOULD_OPEN) {
+    spawn('open', [OUT_PATH], { detached: true, stdio: 'ignore' }).unref();
+    console.log('✓ Opened in browser');
+  }
 }

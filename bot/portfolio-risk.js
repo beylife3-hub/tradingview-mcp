@@ -15,7 +15,8 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spearman, mean, stdev } from './backtest.js';
+import { spearman } from './backtest.js';
+import { mean, stdev } from './engine.js';
 import { getActivePosition } from './position-tracker.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

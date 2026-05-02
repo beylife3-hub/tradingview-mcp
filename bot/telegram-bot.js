@@ -49,10 +49,14 @@ const CHAT_ID   = process.env.TELEGRAM_CHAT_ID  ?? '';
 const STATE_FN  = join(__dirname, 'journal', 'telegram-state.json');
 const JRN_FN    = join(__dirname, 'journal', 'trades.json');
 
-if (!TOKEN || !CHAT_ID) {
-  console.error('✗ TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set.');
-  console.error('  Run: node bot/setup-telegram.js');
-  process.exit(1);
+// Token check is deferred to main() so that this module can be imported
+// without exiting on missing env vars (e.g., for testing dispatcher logic).
+function requireTokens() {
+  if (!TOKEN || !CHAT_ID) {
+    console.error('✗ TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set.');
+    console.error('  Run: node bot/setup-telegram.js');
+    process.exit(1);
+  }
 }
 
 // ─── Persistence ─────────────────────────────────────────────────────────────
@@ -349,6 +353,7 @@ const ONCE    = argv.includes('--once');
 const VERBOSE = argv.includes('--verbose');
 
 async function main() {
+  requireTokens();
   console.log('━'.repeat(70));
   console.log('  Telegram Remote Control Bot');
   console.log('━'.repeat(70));
@@ -393,7 +398,9 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-main().catch(async e => {
-  console.error('Fatal:', e.message);
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch(async e => {
+    console.error('Fatal:', e.message);
+    process.exit(1);
+  });
+}

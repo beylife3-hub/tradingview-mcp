@@ -4,3 +4,10 @@ scripts/current.pine
 temp_*
 *.log
 discovery-log.json
+
+# Avoid accidental commits of secrets / unrelated projects / build artifacts
+plaid-portfolio/
+.claude/worktrees/
+bot/dashboard.html
+bot/journal/*.json
+bot/journal/*.jsonl
