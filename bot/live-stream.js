@@ -15,9 +15,10 @@
  */
 
 import { analyze } from './coach.js';
-import { send, isEnabled, notifyAnalysis, notifyInfo } from './notify.js';
+import { send, isEnabled, notifyAnalysis, notifyInfo, formatAnalysisForTelegram } from './notify.js';
 import { teachAnalysis } from './education.js';
 import { drawAnalysis, clearBotShapes } from './draw-plan.js';
+import { getActivePositionFor, computePositionPnL } from './position-tracker.js';
 import { disconnect } from '../src/connection.js';
 import * as chart from '../src/core/chart.js';
 import * as data from '../src/core/data.js';
@@ -92,6 +93,58 @@ async function runDeepAnalysis() {
   const o = result.output;
   logInfo(`${o.ticker} ${o.timeframe}  •  ${o.decision}  •  score ${o.setupScore}  •  $${o.currentPrice.toFixed ? o.currentPrice.toFixed(4) : o.currentPrice}`);
   _lastAnalyzedPrice = o.currentPrice;
+
+  // ─── POSITION HELD MODE ──────────────────────────────────────────────────
+  // If user is already in a trade on this symbol, switch to monitor mode:
+  //   - DON'T draw new BUY HERE labels
+  //   - DON'T send standard analysis to Telegram
+  //   - DO send a P&L update on material status change
+  const heldPosition = getActivePositionFor(o.ticker);
+  if (heldPosition) {
+    const pnl = computePositionPnL(heldPosition, o.currentPrice);
+    const heldHash = `held|${heldPosition.direction}|${pnl.status}|${Math.round((pnl.rMult || 0) * 4) / 4}`;
+
+    if (CONFIG.changesOnly && heldHash === _prevHash && (Date.now() - _prevAt) < FORCED_REFRESH_MS) {
+      logInfo(`Held: ${heldPosition.direction} @ ${heldPosition.entry} (${pnl.rMult?.toFixed(2) ?? '?'}R, status ${pnl.status}) — no change`);
+      // Clear chart so no stale BUY HERE remains
+      if (CONFIG.draw) await clearBotShapes().catch(() => {});
+      return result;
+    }
+
+    // Build held-position message
+    const dirIcon = heldPosition.direction === 'LONG' ? '🟢' : '🔴';
+    const sign = (pnl.pnl$ ?? 0) >= 0 ? '+' : '';
+    const heldMsg = [
+      `${dirIcon} *POSITION HELD* — \`${heldPosition.symbol}\` ${heldPosition.direction}`,
+      '',
+      `*P&L:* \`${sign}$${(pnl.pnl$ ?? 0).toFixed(2)}\` _(${sign}${(pnl.pnlPct * 100).toFixed(2)}%)_`,
+      pnl.rMult != null ? `*R-mult:* \`${pnl.rMult >= 0 ? '+' : ''}${pnl.rMult.toFixed(2)}R\`` : '',
+      '',
+      `Entry:    \`${heldPosition.entry}\``,
+      `Now:      \`${o.currentPrice.toFixed(4)}\``,
+      heldPosition.stop   ? `Stop:     \`${heldPosition.stop}\`` : '',
+      heldPosition.target ? `Target:   \`${heldPosition.target}\`` : '',
+      heldPosition.size   ? `Size:     ${heldPosition.size}` : '',
+      `Held:     ${Math.round(pnl.ageMinutes)} min`,
+      '',
+      pnl.status === 'stopHit'    ? '⛔ *STOP HIT* — close immediately and run /exited' :
+      pnl.status === 'targetHit'  ? '✅ *TARGET HIT* — take profit and run /exited' :
+      pnl.status === 'nearStop'   ? '⚠️ *Near stop* — be ready to exit' :
+      pnl.status === 'nearTarget' ? '🎯 *Near target* — consider taking 50% off' :
+      (pnl.rMult != null && pnl.rMult >= 1) ? '💡 *In >1R profit* — move stop to break-even' : '',
+      '',
+      '_New BUY HERE labels paused. Use /exited when closed._',
+    ].filter(Boolean).join('\n');
+
+    const sent = await send(heldMsg);
+    logOk(`${sent ? 'Sent' : 'Send failed'} — POSITION HELD update (status ${pnl.status})`);
+    _prevHash = heldHash;
+    _prevAt   = Date.now();
+
+    // Clear chart drawings so no stale BUY HERE remains
+    if (CONFIG.draw) await clearBotShapes().catch(() => {});
+    return result;
+  }
 
   // Skip silent-noop
   if (CONFIG.silentNoop && o.decision === 'NO TRADE') {
