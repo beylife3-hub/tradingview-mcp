@@ -20,6 +20,7 @@ import { teachAnalysis } from './education.js';
 import { drawAnalysis, clearBotShapes } from './draw-plan.js';
 import { getActivePositionFor, computePositionPnL } from './position-tracker.js';
 import { checkProtections } from './protections.js';
+import { getOptimalParams } from './auto-tune.js';
 import { disconnect } from '../src/connection.js';
 import * as chart from '../src/core/chart.js';
 import * as data from '../src/core/data.js';
@@ -79,13 +80,29 @@ async function runDeepAnalysis() {
   _lastDeepAnalysisAt = Date.now();   // mark BEFORE so even on failure we don't tight-loop
   let result;
   try {
+    // Check for symbol-specific tuned params first; fall back to CONFIG defaults
+    let minScore = CONFIG.minScore;
+    let targetRR = CONFIG.targetRR;
+    let usedTuned = false;
+    try {
+      // Need to know current symbol BEFORE calling analyze. Cheaper to fetch state.
+      const { getState } = await import('../src/core/chart.js');
+      const state = await getState();
+      const tuned = getOptimalParams(state.symbol);
+      if (tuned) {
+        minScore = tuned.threshold;
+        targetRR = tuned.rewardRisk;
+        usedTuned = true;
+      }
+    } catch { /* fall back to defaults */ }
+
     result = await analyze({
       riskDollars: CONFIG.riskDollars,
-      minScore:    CONFIG.minScore,
-      targetRR:    CONFIG.targetRR,
+      minScore, targetRR,
       stopCapPct:  CONFIG.stopCapPct,
       profile:     CONFIG.profile,
     });
+    if (usedTuned) result._tuned = { minScore, targetRR };
   } catch (e) {
     logErr(`Analysis failed: ${e.message}`);
     return null;
