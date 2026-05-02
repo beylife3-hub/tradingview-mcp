@@ -19,6 +19,7 @@ import { send, isEnabled, notifyAnalysis, notifyInfo, formatAnalysisForTelegram 
 import { teachAnalysis } from './education.js';
 import { drawAnalysis, clearBotShapes } from './draw-plan.js';
 import { getActivePositionFor, computePositionPnL } from './position-tracker.js';
+import { checkProtections } from './protections.js';
 import { disconnect } from '../src/connection.js';
 import * as chart from '../src/core/chart.js';
 import * as data from '../src/core/data.js';
@@ -142,6 +143,36 @@ async function runDeepAnalysis() {
     _prevAt   = Date.now();
 
     // Clear chart drawings so no stale BUY HERE remains
+    if (CONFIG.draw) await clearBotShapes().catch(() => {});
+    return result;
+  }
+
+  // ─── PROTECTION LOCKS ────────────────────────────────────────────────────
+  // Check circuit breakers BEFORE acting on any signal.
+  const lock = checkProtections({
+    account: 10000,
+    symbol:  o.ticker,
+    setup:   result.best?.setup?.name,
+  });
+  if (lock.locked) {
+    const lockHash = `lock|${lock.kind}|${lock.until || ''}`;
+    if (CONFIG.changesOnly && lockHash === _prevHash && (Date.now() - _prevAt) < FORCED_REFRESH_MS) {
+      logInfo(`🔒 ${lock.kind} — no change, suppressed`);
+      if (CONFIG.draw) await clearBotShapes().catch(() => {});
+      return result;
+    }
+    const lockMsg = [
+      `🔒 *TRADING LOCKED* — \`${o.ticker}\` ${o.timeframe}`,
+      '',
+      `*Reason:* ${lock.reason}`,
+      lock.until ? `*Until:* ${new Date(lock.until).toLocaleString()}` : '',
+      '',
+      '_Use /resume on Telegram to override._',
+      '_All entries blocked. Existing positions can still be managed via /position._',
+    ].filter(Boolean).join('\n');
+    const sent = await send(lockMsg);
+    logOk(`${sent ? 'Sent' : 'Send failed'} — LOCK (${lock.kind})`);
+    _prevHash = lockHash; _prevAt = Date.now();
     if (CONFIG.draw) await clearBotShapes().catch(() => {});
     return result;
   }
