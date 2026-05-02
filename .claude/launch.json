@@ -1,0 +1,35 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["bot/serve-dashboard.js"],
+      "port": 8765
+    },
+    {
+      "name": "tradingview-cdp",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["scripts/launch_tv_debug_mac.sh"],
+      "port": 9222
+    },
+    {
+      "name": "live-stream-coach",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["bot/live-stream.js", "--live", "--live-poll", "2", "--draw", "--aggressive", "--risk", "100"],
+      "port": 0
+    },
+    {
+      "name": "telegram-bot",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["bot/telegram-bot.js"],
+      "port": 0
+    },
+    {
+      "name": "mcp-server",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["src/server.js"],
+      "port": 0
+    }
+  ]
+}
