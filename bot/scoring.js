@@ -147,6 +147,37 @@ export function scoreSetup(setup, structure, levels, regime, bars, opts = {}) {
   components.push({ name: 'Structure clarity', score: s6, max: 1,
     note: `${regime.type} (confidence ${(regime.confidence * 100).toFixed(0)}%)` });
 
+  // ─── 6.5 Time-of-day session filter (0 → 0.5 bonus, NY lunch chop = -0.5) ──
+  // Per Freqtrade community + ORB research: intraday equity edge concentrates
+  // in opening 90 min (09:30-11:00 ET) and closing 60 min (15:00-16:00 ET).
+  // Mid-day (11:30-13:30 ET) is mostly chop and degrades win rates.
+  let s6_5 = 0;
+  let timeNote = '';
+  try {
+    const now = new Date();
+    const nyHour = Number(now.toLocaleString('en-US', { timeZone: 'America/New_York', hour: '2-digit', hour12: false }).split(':')[0]);
+    const nyMin  = Number(now.toLocaleString('en-US', { timeZone: 'America/New_York', minute: '2-digit' }));
+    const minutesFromOpen = (nyHour - 9) * 60 + nyMin - 30;
+    if (minutesFromOpen >= 0 && minutesFromOpen < 90) {
+      s6_5 = 0.5;
+      timeNote = `Opening drive window (${nyHour}:${nyMin.toString().padStart(2,'0')} ET) — high-edge`;
+    } else if (minutesFromOpen >= 330 && minutesFromOpen < 390) {
+      s6_5 = 0.5;
+      timeNote = `Closing hour (${nyHour}:${nyMin.toString().padStart(2,'0')} ET) — institutional unwind`;
+    } else if (minutesFromOpen >= 120 && minutesFromOpen < 240) {
+      s6_5 = -0.5;
+      timeNote = `NY lunch (${nyHour}:${nyMin.toString().padStart(2,'0')} ET) — chop window, edge degraded`;
+    } else if (minutesFromOpen >= 0 && minutesFromOpen < 390) {
+      timeNote = `Mid-session (${nyHour}:${nyMin.toString().padStart(2,'0')} ET) — neutral window`;
+    } else {
+      timeNote = `Outside US RTH (${nyHour}:${nyMin.toString().padStart(2,'0')} ET) — crypto/futures only`;
+    }
+  } catch { /* tz unavailable */ }
+  if (s6_5 !== 0 || timeNote) {
+    raw += s6_5;
+    components.push({ name: 'Time of day', score: Math.max(0, s6_5), max: 0.5, note: timeNote });
+  }
+
   // ─── 7. Move not extended (0-1) — finer extension gradient ────────────────
   const fiveAgo = bars[bars.length - 6]?.close ?? last.close;
   const lastLeg = Math.abs(last.close - fiveAgo);

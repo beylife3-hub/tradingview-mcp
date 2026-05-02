@@ -194,12 +194,86 @@ function formatStrictOutput(out) {
 
 // ─── Main analysis ────────────────────────────────────────────────────────────
 
+// ─── Higher-timeframe bias (multi-timeframe confluence) ──────────────────────
+//
+// Pulls the "next TF up" and computes a 4-factor bias score there. Returns
+// { direction: 'BULLISH'|'BEARISH'|'NEUTRAL', score, htf, factors }.
+//
+// HTF mapping (Freqtrade convention):
+//   1m → 5m, 5m → 15m, 15m → 60m, 60m → 240m, 240m → D, D → W
+//
+// Strategy: temporarily switch the chart, fetch bars, score, switch back.
+export async function fetchHTFBias(currentTF) {
+  const HTF_MAP = { '1':'5', '3':'15', '5':'15', '15':'60', '30':'60',
+                    '60':'240', '120':'240', '240':'D', 'D':'W' };
+  const htf = HTF_MAP[currentTF] || HTF_MAP[String(currentTF)];
+  if (!htf) return null;
+
+  try {
+    await chart.setTimeframe({ timeframe: htf });
+    await new Promise(r => setTimeout(r, 1500));   // wait for data load
+
+    const ohlcv = await data.getOhlcv({ count: 100, summary: false });
+    if (!ohlcv.success || !ohlcv.bars || ohlcv.bars.length < 50) {
+      await chart.setTimeframe({ timeframe: currentTF });
+      return null;
+    }
+    const bars = ohlcv.bars;
+    const closes = bars.map(b => b.close);
+    const lastBar = bars[bars.length - 1];
+
+    // 4-factor HTF bias
+    const e20s  = ema(closes, 20);
+    const e50s  = ema(closes, 50);
+    const e200s = ema(closes, 200);
+    const rsiS  = rsi(closes, 14);
+    const e20  = e20s[e20s.length - 1];
+    const e50  = e50s[e50s.length - 1];
+    const e200 = e200s[e200s.length - 1];
+    const e20Prev = e20s[Math.max(0, e20s.length - 5)];
+    const r = rsiS[rsiS.length - 1];
+
+    let score = 0;
+    const factors = [];
+
+    // 1. EMA stack alignment (±25)
+    if (e20 > e50 && e50 > e200 && lastBar.close > e20)       { score += 25; factors.push({ name: 'EMA stack full bullish', value: 25 }); }
+    else if (e20 < e50 && e50 < e200 && lastBar.close < e20)  { score -= 25; factors.push({ name: 'EMA stack full bearish', value: -25 }); }
+    else if (e20 > e50)                                        { score += 18; factors.push({ name: 'EMA stack partial bullish', value: 18 }); }
+    else if (e20 < e50)                                        { score -= 18; factors.push({ name: 'EMA stack partial bearish', value: -18 }); }
+
+    // 2. HTF RSI zone (±15)
+    if (r > 60)                                                { score += 15; factors.push({ name: `HTF RSI ${r.toFixed(0)} bullish zone`, value: 15 }); }
+    else if (r < 40)                                           { score -= 15; factors.push({ name: `HTF RSI ${r.toFixed(0)} bearish zone`, value: -15 }); }
+
+    // 3. EMA20 slope (±10)
+    if (e20Prev && e20 > e20Prev * 1.001)                      { score += 10; factors.push({ name: 'EMA20 slope rising', value: 10 }); }
+    else if (e20Prev && e20 < e20Prev * 0.999)                 { score -= 10; factors.push({ name: 'EMA20 slope falling', value: -10 }); }
+
+    // 4. Price vs HTF EMA20 (±10)
+    if (lastBar.close > e20)                                   { score += 10; factors.push({ name: 'Price > HTF EMA20', value: 10 }); }
+    else                                                       { score -= 10; factors.push({ name: 'Price < HTF EMA20', value: -10 }); }
+
+    // Switch chart back
+    await chart.setTimeframe({ timeframe: currentTF });
+    await new Promise(r => setTimeout(r, 1500));
+
+    const direction = score >= 30 ? 'BULLISH' : score <= -30 ? 'BEARISH' : 'NEUTRAL';
+    return { direction, score, htf, factors };
+  } catch (e) {
+    // Best-effort restore
+    try { await chart.setTimeframe({ timeframe: currentTF }); } catch {}
+    return null;
+  }
+}
+
 export async function analyze({
   riskDollars = CONFIG.riskDollars,
   minScore    = CONFIG.minScore,
   targetRR    = CONFIG.targetRR,
   stopCapPct  = CONFIG.stopCapPct,
   profile     = CONFIG.profile,
+  noHTF       = false,                              // skip HTF fetch (faster)
 } = {}) {
   // 1. Read chart
   const state = await chart.getState();
@@ -212,21 +286,43 @@ export async function analyze({
   }
   const bars = ohlcv.bars;
 
-  // 2. Build structure + extract levels
+  // 2. HTF bias FIRST (changes TF temporarily, switches back) — Freqtrade pattern
+  let htfBias = null;
+  if (!noHTF) {
+    htfBias = await fetchHTFBias(tf);
+  }
+
+  // 3. Build structure + extract levels
   const structure = buildStructure(bars);
   const levels    = extractKeyLevels(bars, structure);
   const regime    = classifyRegime(bars);
 
-  // 3. Detect setups (pass profile-aware detector options)
+  // 4. Detect setups (pass profile-aware detector options)
   const detectorOpts = {
     aggressive: profile === 'aggressive' || profile === 'yolo',
     yolo:       profile === 'yolo',
   };
   const setups = detectAll(bars, levels, structure, detectorOpts);
 
-  // 4. Score each + pick best (only ones that pass strict filters)
+  // 5. Apply HTF confluence to each setup
+  if (htfBias && htfBias.direction !== 'NEUTRAL') {
+    for (const s of setups) {
+      s.htfAligned = (htfBias.direction === 'BULLISH' && s.direction === 'LONG')
+                  || (htfBias.direction === 'BEARISH' && s.direction === 'SHORT');
+      s.htfCounter = (htfBias.direction === 'BULLISH' && s.direction === 'SHORT')
+                  || (htfBias.direction === 'BEARISH' && s.direction === 'LONG');
+    }
+  }
+
+  // 6. Score each + pick best (only ones that pass strict filters)
   const scored = setups.map(setup => {
     const score = scoreSetup(setup, structure, levels, regime, bars, { targetRR });
+    // HTF counter-trend = quality downgrade (penalty in conservative/balanced)
+    if (setup.htfCounter && profile !== 'aggressive' && profile !== 'yolo') {
+      score.score = Math.max(1, score.score - 1.5);
+      score.components.push({ name: 'HTF disagreement', score: 0, max: 0,
+        note: `${htfBias.htf}m HTF is ${htfBias.direction} but setup is ${setup.direction}` });
+    }
     const rejection = applyStrictFilters({
       setup, score, structure, regime, bars,
       accountRiskDollars: riskDollars,
@@ -368,6 +464,7 @@ export async function analyze({
   return {
     symbol, tf,
     structure, levels, regime, setups, scored, best,
+    htfBias,
     decision, verdict,
     score: setupScore,
     formatted,
@@ -378,6 +475,7 @@ export async function analyze({
       bias,
       marketCondition: regimeSummary(regime),
       bestLevel: bestLevelLabel,
+      htf: htfBias ? `${htfBias.htf}m ${htfBias.direction} (score ${htfBias.score >= 0 ? '+' : ''}${htfBias.score})` : 'n/a',
       decision,
       setupScore,
       entry, stop, target1, target2, invalidation,

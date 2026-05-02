@@ -310,7 +310,292 @@ export function detectRangeReversal(bars, levels, opts = {}) {
   return null;
 }
 
+// ─── Tier 2.4 — Bull/Bear Flag (post-impulse consolidation) ──────────────────
+
+/**
+ * Bull flag: a sharp impulse leg up, followed by 3-7 bars of consolidation
+ * with a slight downward drift, then a breakout above the consolidation high.
+ *
+ * Bear flag is the mirror.
+ *
+ * Per Bulkowski's Encyclopedia of Chart Patterns: ~67% success rate when
+ * filtered for volume confirmation on the breakout.
+ */
+export function detectFlag(bars, opts = {}) {
+  const minImpulseATR  = opts.minImpulseATR  ?? 1.5;
+  const consolBars     = opts.consolBars     ?? 5;
+
+  if (bars.length < 30) return null;
+  const atrSeries = atr(bars, 14);
+  const atrNow = atrSeries[atrSeries.length - 1];
+  if (!Number.isFinite(atrNow)) return null;
+
+  // Look for impulse leg followed by consolidation
+  const last = bars[bars.length - 1];
+  const consolStart = bars.length - 1 - consolBars;
+  const impulseStart = consolStart - 5;
+  if (impulseStart < 5) return null;
+
+  const impulseLeg = bars[consolStart].close - bars[impulseStart].close;
+  const impulseAtrRatio = Math.abs(impulseLeg) / atrNow;
+  if (impulseAtrRatio < minImpulseATR) return null;
+
+  const consolBarsArr = bars.slice(consolStart, -1);
+  const consolHigh = Math.max(...consolBarsArr.map(b => b.high));
+  const consolLow  = Math.min(...consolBarsArr.map(b => b.low));
+  const consolRange = consolHigh - consolLow;
+  if (consolRange > 1.5 * atrNow) return null;  // too wide = not a flag
+
+  // Bullish flag: impulse up, consolidation down-drift, breakout up
+  if (impulseLeg > 0 && last.close > consolHigh) {
+    return {
+      name: 'Bull Flag Breakout',
+      direction: 'LONG',
+      entry: last.close,
+      invalidation: consolLow,
+      rationale: `Impulse leg +${impulseLeg.toFixed(2)} (${impulseAtrRatio.toFixed(1)}× ATR) followed by ${consolBars}-bar consolidation. Breakout above ${consolHigh.toFixed(2)}.`,
+      components: { impulseAtrRatio, consolHigh, consolLow },
+    };
+  }
+  // Bearish flag: impulse down, consolidation up-drift, breakout down
+  if (impulseLeg < 0 && last.close < consolLow) {
+    return {
+      name: 'Bear Flag Breakdown',
+      direction: 'SHORT',
+      entry: last.close,
+      invalidation: consolHigh,
+      rationale: `Impulse leg ${impulseLeg.toFixed(2)} (${impulseAtrRatio.toFixed(1)}× ATR) followed by ${consolBars}-bar consolidation. Breakdown below ${consolLow.toFixed(2)}.`,
+      components: { impulseAtrRatio, consolHigh, consolLow },
+    };
+  }
+  return null;
+}
+
+// ─── Tier 2.4 — Double Top / Bottom ──────────────────────────────────────────
+
+/**
+ * Two highs (or lows) within 0.3% of each other, separated by 5-30 bars,
+ * with a clear "neckline" (intermediate low between the two highs).
+ * Trigger: close below neckline (top) or above neckline (bottom).
+ *
+ * Per Bulkowski: double tops have ~64% follow-through to target.
+ */
+export function detectDoubleTopBottom(bars, opts = {}) {
+  const tolerance     = opts.tolerance     ?? 0.003;   // 0.3% match tolerance
+  const minSeparation = opts.minSeparation ?? 5;
+  const maxSeparation = opts.maxSeparation ?? 30;
+
+  if (bars.length < maxSeparation + 5) return null;
+  const last = bars[bars.length - 1];
+  const swingHighs = findSwingHighs(bars.slice(0, -1), 3);
+  const swingLows  = findSwingLows(bars.slice(0, -1), 3);
+
+  // Double top
+  if (swingHighs.length >= 2) {
+    for (let i = swingHighs.length - 2; i >= 0; i--) {
+      const h1 = swingHighs[i];
+      const h2 = swingHighs[swingHighs.length - 1];
+      const sep = h2.idx - h1.idx;
+      if (sep < minSeparation || sep > maxSeparation) continue;
+      if (Math.abs(h1.price - h2.price) / h1.price > tolerance) continue;
+      // Find neckline (lowest low between the two highs)
+      const between = bars.slice(h1.idx, h2.idx);
+      if (!between.length) continue;
+      const neckline = Math.min(...between.map(b => b.low));
+      if (last.close < neckline) {
+        return {
+          name: 'Double Top Breakdown',
+          direction: 'SHORT',
+          entry: last.close,
+          invalidation: Math.max(h1.price, h2.price),
+          rationale: `Double top at ${h1.price.toFixed(2)}/${h2.price.toFixed(2)} (sep ${sep} bars). Close below neckline ${neckline.toFixed(2)} confirms breakdown.`,
+          components: { h1: h1.price, h2: h2.price, neckline },
+        };
+      }
+    }
+  }
+
+  // Double bottom
+  if (swingLows.length >= 2) {
+    for (let i = swingLows.length - 2; i >= 0; i--) {
+      const l1 = swingLows[i];
+      const l2 = swingLows[swingLows.length - 1];
+      const sep = l2.idx - l1.idx;
+      if (sep < minSeparation || sep > maxSeparation) continue;
+      if (Math.abs(l1.price - l2.price) / l1.price > tolerance) continue;
+      const between = bars.slice(l1.idx, l2.idx);
+      if (!between.length) continue;
+      const neckline = Math.max(...between.map(b => b.high));
+      if (last.close > neckline) {
+        return {
+          name: 'Double Bottom Breakout',
+          direction: 'LONG',
+          entry: last.close,
+          invalidation: Math.min(l1.price, l2.price),
+          rationale: `Double bottom at ${l1.price.toFixed(2)}/${l2.price.toFixed(2)} (sep ${sep} bars). Close above neckline ${neckline.toFixed(2)} confirms breakout.`,
+          components: { l1: l1.price, l2: l2.price, neckline },
+        };
+      }
+    }
+  }
+  return null;
+}
+
+// ─── Tier 2.4 — Gap Fill (mean reversion to prior close) ─────────────────────
+
+/**
+ * Gap-and-fade: opening gap that mean-reverts toward the prior close.
+ * If gap > 1%, fade direction is back toward prior close.
+ *
+ * Trigger: first reversal bar after gap that moves back toward fill price.
+ * Per quant studies: ~58% of gaps > 1% partially fill within first hour.
+ */
+export function detectGapFill(bars, opts = {}) {
+  const minGapPct = opts.minGapPct ?? 0.01;       // 1%
+  const maxGapPct = opts.maxGapPct ?? 0.05;       // 5% (gaps > 5% often run, don't fade)
+
+  if (bars.length < 30) return null;
+  const last = bars[bars.length - 1];
+
+  // Find session open (first bar in the recent calendar day window) — simple heuristic:
+  // assume opening bar = bar with biggest gap from previous bar in last 50 bars
+  const recent = bars.slice(-50);
+  let biggestGap = null;
+  let biggestGapIdx = -1;
+  for (let i = 1; i < recent.length; i++) {
+    const gap = recent[i].open - recent[i-1].close;
+    const gapPct = Math.abs(gap) / recent[i-1].close;
+    if (gapPct >= minGapPct && gapPct <= maxGapPct) {
+      if (!biggestGap || gapPct > Math.abs(biggestGap.pct)) {
+        biggestGap = { gap, pct: gapPct, openPrice: recent[i].open, prevClose: recent[i-1].close };
+        biggestGapIdx = i;
+      }
+    }
+  }
+  if (!biggestGap) return null;
+
+  // Gap up + current bar bearish + close below open = gap fill in progress
+  if (biggestGap.gap > 0 && last.close < last.open && last.close < biggestGap.openPrice) {
+    return {
+      name: 'Gap Fill Fade (Short)',
+      direction: 'SHORT',
+      entry: last.close,
+      invalidation: biggestGap.openPrice + (biggestGap.openPrice - last.close) * 0.3,
+      rationale: `Opening gap up of ${(biggestGap.pct*100).toFixed(2)}% (${biggestGap.prevClose.toFixed(2)} → ${biggestGap.openPrice.toFixed(2)}). Bearish reaction targets gap fill at ${biggestGap.prevClose.toFixed(2)}.`,
+      components: { gapPct: biggestGap.pct, fillTarget: biggestGap.prevClose },
+    };
+  }
+  // Gap down + bullish reaction = gap fill long
+  if (biggestGap.gap < 0 && last.close > last.open && last.close > biggestGap.openPrice) {
+    return {
+      name: 'Gap Fill Fade (Long)',
+      direction: 'LONG',
+      entry: last.close,
+      invalidation: biggestGap.openPrice - (last.close - biggestGap.openPrice) * 0.3,
+      rationale: `Opening gap down of ${(biggestGap.pct*100).toFixed(2)}% (${biggestGap.prevClose.toFixed(2)} → ${biggestGap.openPrice.toFixed(2)}). Bullish reaction targets gap fill at ${biggestGap.prevClose.toFixed(2)}.`,
+      components: { gapPct: biggestGap.pct, fillTarget: biggestGap.prevClose },
+    };
+  }
+  return null;
+}
+
+// ─── Tier 2.4 — End-of-Day Fade (last hour overextension fade) ───────────────
+
+/**
+ * In the last hour of the session, if price is overextended from VWAP
+ * (> 1× ATR away) and shows a reaction bar back toward VWAP, fade.
+ *
+ * This works because end-of-day institutional positioning often unwinds
+ * intraday extremes.
+ */
+export function detectEODFade(bars, structure, opts = {}) {
+  if (!structure?.vwap || bars.length < 30) return null;
+  const minDistATR = opts.minDistATR ?? 1.0;
+  const last = bars[bars.length - 1];
+
+  // Check if we're in last 60 min ET
+  const now = new Date();
+  const nyHour = Number(now.toLocaleString('en-US', { timeZone: 'America/New_York', hour: '2-digit', hour12: false }).split(':')[0]);
+  if (nyHour !== 15) return null;   // 15:00-16:00 ET only
+
+  const atrSeries = atr(bars, 14);
+  const atrNow = atrSeries[atrSeries.length - 1];
+  if (!Number.isFinite(atrNow)) return null;
+
+  const distFromVwap = (last.close - structure.vwap) / atrNow;
+  const range = last.high - last.low;
+  if (range === 0) return null;
+
+  // Above VWAP by > 1 ATR + bearish reaction → fade
+  if (distFromVwap > minDistATR && last.close < last.open) {
+    const upperWick = (last.high - Math.max(last.open, last.close)) / range;
+    if (upperWick > 0.4) {
+      return {
+        name: 'EOD Fade (Short)',
+        direction: 'SHORT',
+        entry: last.close,
+        invalidation: last.high + 0.1 * atrNow,
+        rationale: `Last hour fade — price ${distFromVwap.toFixed(1)}× ATR above VWAP ${structure.vwap.toFixed(2)}. Bearish bar with ${(upperWick*100).toFixed(0)}% upper wick. Target VWAP for unwind.`,
+        components: { distFromVwap, vwap: structure.vwap },
+      };
+    }
+  }
+  // Below VWAP by > 1 ATR + bullish reaction → fade
+  if (distFromVwap < -minDistATR && last.close > last.open) {
+    const lowerWick = (Math.min(last.open, last.close) - last.low) / range;
+    if (lowerWick > 0.4) {
+      return {
+        name: 'EOD Fade (Long)',
+        direction: 'LONG',
+        entry: last.close,
+        invalidation: last.low - 0.1 * atrNow,
+        rationale: `Last hour fade — price ${distFromVwap.toFixed(1)}× ATR below VWAP ${structure.vwap.toFixed(2)}. Bullish bar with ${(lowerWick*100).toFixed(0)}% lower wick. Target VWAP for unwind.`,
+        components: { distFromVwap, vwap: structure.vwap },
+      };
+    }
+  }
+  return null;
+}
+
 // ─── Run all detectors and return the best one ───────────────────────────────
+
+/**
+ * Multi-bar confirmation gate — verifies the last N bars all reacted in
+ * setup direction. Helps avoid catching falling knives.
+ *
+ * For LONG: last N bars must all be bullish (close > open)
+ *           AND last bar must close > previous bar close
+ *           AND last bar must close in upper half of its range
+ * For SHORT: mirror.
+ *
+ * @returns {object} { confirmed: bool, reason: string }
+ */
+export function checkMultiBarConfirmation(direction, bars, count = 1) {
+  if (!bars || bars.length < count + 2) return { confirmed: false, reason: 'insufficient bars' };
+  const recent = bars.slice(-count);
+  const prev = bars[bars.length - count - 1];
+
+  for (let i = 0; i < recent.length; i++) {
+    const b = recent[i];
+    const range = b.high - b.low;
+    if (range === 0) return { confirmed: false, reason: `bar ${i+1} is flat` };
+    const closePos = (b.close - b.low) / range;
+
+    if (direction === 'LONG') {
+      if (b.close <= b.open) return { confirmed: false, reason: `bar -${count-i} not bullish (close ${b.close.toFixed(4)} ≤ open ${b.open.toFixed(4)})` };
+      if (closePos < 0.55) return { confirmed: false, reason: `bar -${count-i} closed in lower half (${(closePos*100).toFixed(0)}%)` };
+    } else if (direction === 'SHORT') {
+      if (b.close >= b.open) return { confirmed: false, reason: `bar -${count-i} not bearish` };
+      if (closePos > 0.45) return { confirmed: false, reason: `bar -${count-i} closed in upper half` };
+    }
+  }
+  // Last bar must show progress vs the bar before our window
+  const lastClose = recent[recent.length - 1].close;
+  if (direction === 'LONG' && lastClose <= prev.close)  return { confirmed: false, reason: 'no follow-through vs prior bar' };
+  if (direction === 'SHORT' && lastClose >= prev.close) return { confirmed: false, reason: 'no follow-through vs prior bar' };
+
+  return { confirmed: true, reason: `${count}-bar ${direction.toLowerCase()} confirmation` };
+}
 
 /**
  * Run all setup detectors. Returns array of detected setups (most specific first).
@@ -354,6 +639,10 @@ export function detectAll(bars, levels, structure, opts = {}) {
     () => detectORB(bars, levels, orb),
     () => detectTrendPullback(bars, levels, structure, pullback),
     () => detectRangeReversal(bars, levels, range),
+    () => detectFlag(bars),
+    () => detectDoubleTopBottom(bars),
+    () => detectGapFill(bars),
+    () => detectEODFade(bars, structure),
   ];
   const results = [];
   for (const fn of detectors) {
