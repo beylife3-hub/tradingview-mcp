@@ -23,6 +23,8 @@ import { atr, ema } from './engine.js';
 import { computeVolumeProfile, isInChopZone } from './volume-profile.js';
 import { checkNewsRisk } from './news-filter.js';
 import { getMultiplier as getAdaptiveMultiplier, isAutoBanned as isAdaptiveBanned } from './adaptive-weights.js';
+import { detectAnomaly } from './anomaly-detector.js';
+import { adjustPositionSize } from './portfolio-risk.js';
 
 /**
  * Score a setup against current market state.
@@ -320,10 +322,33 @@ export function applyStrictFilters({
     }
   }
 
+  // Anomaly detection — black-swan halt (always rejects, all profiles)
+  if (bars && bars.length > 50) {
+    const anom = detectAnomaly(bars);
+    if (anom.anomaly) {
+      reasons.push(`Anomaly: ${anom.reason}`);
+    }
+  }
+
   // Adaptive auto-ban — setup with strongly negative recent expectancy
   const adaptiveBan = isAdaptiveBanned(setup.name, structure?.symbol || '*');
   if (adaptiveBan.banned) {
     reasons.push(`Adaptive ban: ${adaptiveBan.reason}`);
+  }
+
+  // Portfolio risk gate — refuses if total heat is too high or correlated open exists
+  if (accountRiskDollars > 0) {
+    const portfolio = adjustPositionSize({
+      account: accountRiskDollars * 100,    // assume 1% risk; back into account size
+      requestedRisk: accountRiskDollars,
+      setupName: setup.name,
+      currentSymbol: structure?.symbol || '*',
+    });
+    if (portfolio.block) {
+      reasons.push(`Portfolio risk: ${portfolio.reasons.join('; ')}`);
+    } else if (portfolio.multiplier < 0.5) {
+      reasons.push(`Portfolio risk would shrink size to ${portfolio.multiplier.toFixed(2)}× (${portfolio.reasons.join('; ')})`);
+    }
   }
 
   // Volume Profile chop zone — within 0.1% of POC = no edge in default+conservative
