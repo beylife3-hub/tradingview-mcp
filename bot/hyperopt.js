@@ -110,6 +110,92 @@ function score(m, lossFn) {
   return fn(m, { minTrades: CONFIG.minTrades });
 }
 
+// ─── Bayesian (TPE-style) optimizer ─────────────────────────────────────────
+// Tree-structured Parzen Estimator approximation: instead of full grid,
+// adaptively sample combos based on prior performance. Per Optuna research:
+// finds better params in 10-20 trials vs 1000s for grid.
+//
+// Simple TPE: split observed combos into "good" (top 25%) and "rest";
+// for next sample, score candidate combos by p_good/p_rest ratio.
+
+function sampleRandomCombo(grid) {
+  return grid[Math.floor(Math.random() * grid.length)];
+}
+
+function comboKey(c) {
+  return `${c.threshold}|${c.rewardRisk}|${c.atrMult}|${c.maxHoldBars}`;
+}
+
+function densityAt(combos, candidate) {
+  // Naive Parzen: count combos within "small distance" of candidate
+  let count = 0;
+  for (const c of combos) {
+    if (Math.abs(c.threshold   - candidate.threshold)   <= 0.5 &&
+        Math.abs(c.rewardRisk  - candidate.rewardRisk)  <= 0.5 &&
+        Math.abs(c.atrMult     - candidate.atrMult)     <= 0.5 &&
+        Math.abs(c.maxHoldBars - candidate.maxHoldBars) <= 5) count++;
+  }
+  return count / Math.max(1, combos.length);
+}
+
+/**
+ * Bayesian hyperopt — adaptive sampling.
+ * Returns ordered list of trials, best on top.
+ *
+ * @param {Array} bars
+ * @param {object} opts - { trials: number, lossFn: string }
+ */
+export async function bayesianHyperopt(bars, opts = {}) {
+  const trials = opts.trials ?? 30;
+  const lossFnName = opts.lossFn ?? 'sharpe';
+  const fullGrid = buildGrid();
+  const tried = new Map();   // key → { combo, lossScore }
+
+  // Phase 1: 5 random warmup trials
+  for (let i = 0; i < Math.min(5, fullGrid.length); i++) {
+    const combo = sampleRandomCombo(fullGrid);
+    const key = comboKey(combo);
+    if (tried.has(key)) continue;
+    const sim = simulate(bars, combo);
+    const m = metrics(sim.trades, sim.equityCurve, combo.startEquity);
+    tried.set(key, { combo, metrics: m, lossScore: score(m, lossFnName) });
+  }
+
+  // Phase 2: TPE-style adaptive sampling
+  for (let i = 0; i < trials - 5; i++) {
+    const all = [...tried.values()];
+    if (all.length === 0) break;
+    all.sort((a, b) => b.lossScore - a.lossScore);
+    const goodCount = Math.max(1, Math.floor(all.length * 0.25));
+    const good = all.slice(0, goodCount).map(x => x.combo);
+    const bad  = all.slice(goodCount).map(x => x.combo);
+
+    // Sample candidates from full grid not yet tried, score by p(good)/p(bad)
+    let bestCandidate = null;
+    let bestRatio = -Infinity;
+    const candidates = [];
+    for (let c = 0; c < 20; c++) {
+      const cand = sampleRandomCombo(fullGrid);
+      if (tried.has(comboKey(cand))) continue;
+      candidates.push(cand);
+    }
+    if (!candidates.length) break;
+    for (const cand of candidates) {
+      const pG = densityAt(good, cand);
+      const pB = densityAt(bad, cand);
+      const ratio = pG / Math.max(0.01, pB);
+      if (ratio > bestRatio) { bestRatio = ratio; bestCandidate = cand; }
+    }
+    if (!bestCandidate) bestCandidate = candidates[0];
+
+    const sim = simulate(bars, bestCandidate);
+    const m = metrics(sim.trades, sim.equityCurve, bestCandidate.startEquity);
+    tried.set(comboKey(bestCandidate), { combo: bestCandidate, metrics: m, lossScore: score(m, lossFnName) });
+  }
+
+  return [...tried.values()].sort((a, b) => b.lossScore - a.lossScore);
+}
+
 // ─── Build grid ──────────────────────────────────────────────────────────────
 
 function buildGrid() {

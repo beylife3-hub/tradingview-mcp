@@ -247,6 +247,53 @@ export function adjustPositionSize(opts) {
   };
 }
 
+// ─── VaR / CVaR computation ──────────────────────────────────────────────────
+
+/**
+ * Value-at-Risk (VaR) — historical method.
+ *
+ * VaR(95%) = the daily $ loss that you would NOT exceed 95% of the time.
+ * Computed as the 5th percentile of historical daily P&L (sorted ascending).
+ *
+ * CVaR (Conditional VaR) = average loss in the worst 5% of cases (tail risk).
+ * Useful because VaR ignores HOW BAD the tail is — CVaR captures it.
+ *
+ * Best used as a sizing input: cap CVaR(95%) at e.g., 2% of account.
+ */
+export function computeVaR(account = 10000, confidence = 0.95) {
+  const closed = loadJournal()
+    .filter(t => t.outcome?.pnl != null)
+    .sort((a, b) => +new Date(a.outcome.closedAt) - +new Date(b.outcome.closedAt));
+
+  if (closed.length < 10) {
+    return { var: null, cvar: null, samples: closed.length, reason: 'need ≥ 10 trades for meaningful VaR' };
+  }
+
+  // Aggregate daily P&L (sum trades closed same day)
+  const daily = new Map();
+  for (const t of closed) {
+    const day = t.outcome.closedAt.slice(0, 10);
+    daily.set(day, (daily.get(day) ?? 0) + (t.outcome.pnl ?? 0));
+  }
+  const dailyPnls = [...daily.values()].sort((a, b) => a - b);   // ascending
+
+  const tail = 1 - confidence;
+  const varIdx = Math.max(0, Math.floor(dailyPnls.length * tail) - 1);
+  const varValue = dailyPnls[varIdx];
+  // CVaR = mean of worst tail (everything from 0 to varIdx inclusive)
+  const tailLosses = dailyPnls.slice(0, varIdx + 1);
+  const cvarValue = tailLosses.length ? tailLosses.reduce((s, x) => s + x, 0) / tailLosses.length : varValue;
+
+  return {
+    var: Number(varValue.toFixed(2)),
+    cvar: Number(cvarValue.toFixed(2)),
+    varPctOfAccount: Number(((varValue / account) * 100).toFixed(2)),
+    cvarPctOfAccount: Number(((cvarValue / account) * 100).toFixed(2)),
+    confidence, samples: dailyPnls.length,
+    interpretation: `On ${(confidence * 100).toFixed(0)}% of days, daily loss won't exceed ${Math.abs(varValue).toFixed(2)} ($${Math.abs(varValue).toFixed(0)}). On the worst ${((1-confidence)*100).toFixed(0)}% of days, average loss is ${Math.abs(cvarValue).toFixed(2)} ($${Math.abs(cvarValue).toFixed(0)}).`,
+  };
+}
+
 // ─── CLI ─────────────────────────────────────────────────────────────────────
 
 if (import.meta.url === `file://${process.argv[1]}`) {

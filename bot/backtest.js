@@ -431,6 +431,91 @@ export function monteCarlo(trades, startEquity, nRuns = 1000) {
   };
 }
 
+// ─── Synthetic Price Path Generation ────────────────────────────────────────
+
+/**
+ * Block bootstrap — resample blocks of consecutive bars to generate synthetic
+ * price paths. Preserves short-term autocorrelation while generating new
+ * sequences. Per López de Prado Chapter 12: reveals strategy fragility.
+ *
+ * If your Sharpe collapses on resampled data, you've overfit.
+ *
+ * @param {Array} bars - original bars
+ * @param {object} opts - { blockSize: how many bars per resample block }
+ */
+export function blockBootstrap(bars, opts = {}) {
+  const blockSize = opts.blockSize ?? 20;
+  const targetLen = opts.length ?? bars.length;
+
+  // Generate returns
+  const returns = [];
+  for (let i = 1; i < bars.length; i++) {
+    returns.push((bars[i].close - bars[i-1].close) / bars[i-1].close);
+  }
+
+  // Resample blocks of `blockSize` consecutive returns
+  const synthReturns = [];
+  while (synthReturns.length < targetLen - 1) {
+    const start = Math.floor(Math.random() * (returns.length - blockSize));
+    for (let i = 0; i < blockSize && synthReturns.length < targetLen - 1; i++) {
+      synthReturns.push(returns[start + i]);
+    }
+  }
+
+  // Build synthetic bars from returns
+  const synthBars = [{ ...bars[0] }];
+  let currentPrice = bars[0].close;
+  for (let i = 0; i < synthReturns.length; i++) {
+    currentPrice = currentPrice * (1 + synthReturns[i]);
+    const orig = bars[i + 1] ?? bars[bars.length - 1];
+    const ratio = currentPrice / orig.close;
+    synthBars.push({
+      time: orig.time,
+      open:  orig.open  * ratio,
+      high:  orig.high  * ratio,
+      low:   orig.low   * ratio,
+      close: currentPrice,
+      volume: orig.volume,
+    });
+  }
+  return synthBars;
+}
+
+/**
+ * Run the strategy on N synthetic price paths and report Sharpe distribution.
+ * If real Sharpe is in the top 5% of synthetic paths' Sharpes, edge is real.
+ * If real Sharpe is at/below median synthetic Sharpe, you've overfit.
+ */
+export function syntheticPathTest(bars, opts, nPaths = 100) {
+  const baseline = simulate(bars, opts);
+  const baseM = metrics(baseline.trades, baseline.equityCurve, opts.startEquity ?? CONFIG.startEquity);
+  const baseSharpe = baseM.sharpe;
+
+  const synthSharpes = [];
+  for (let p = 0; p < nPaths; p++) {
+    const synthBars = blockBootstrap(bars, { blockSize: 20 });
+    const sim = simulate(synthBars, opts);
+    const m = metrics(sim.trades, sim.equityCurve, opts.startEquity ?? CONFIG.startEquity);
+    synthSharpes.push(m.sharpe);
+  }
+
+  synthSharpes.sort((a, b) => a - b);
+  const pct95 = synthSharpes[Math.floor(nPaths * 0.95)];
+  const pct50 = synthSharpes[Math.floor(nPaths * 0.5)];
+  const pct05 = synthSharpes[Math.floor(nPaths * 0.05)];
+  const realPercentile = synthSharpes.filter(s => s < baseSharpe).length / nPaths;
+
+  return {
+    baseSharpe, nPaths,
+    synth5th: pct05, synth50th: pct50, synth95th: pct95,
+    realIsTopPct: Number((realPercentile * 100).toFixed(1)),
+    verdict: realPercentile > 0.95 ? 'EDGE REAL — base Sharpe in top 5% of resampled paths'
+           : realPercentile > 0.75 ? 'PROMISING — base Sharpe above 75% of resampled paths'
+           : realPercentile > 0.5  ? 'MARGINAL — base Sharpe near median'
+           :                          'OVERFIT — base Sharpe below median of resampled paths',
+  };
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
