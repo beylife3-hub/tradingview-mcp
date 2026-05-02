@@ -49,6 +49,7 @@ import { scoreSetup, verdictFromScore, applyStrictFilters } from './scoring.js';
 import { teachAnalysis, teachConcept, fullGlossary } from './education.js';
 import { drawAnalysis, clearBotShapes } from './draw-plan.js';
 import { logPlanToJournal } from './journal.js';
+import { computeConviction, shouldOverride } from './discretion.js';
 
 // ─── CLI parsing ─────────────────────────────────────────────────────────────
 
@@ -290,6 +291,8 @@ export async function analyze({
   stopCapPct  = CONFIG.stopCapPct,
   profile     = CONFIG.profile,
   noHTF       = false,                              // skip HTF fetch (faster)
+  allowDiscretion = true,                           // allow AI override of soft filters
+  discretionThreshold = 80,                         // conviction needed (0-100)
 } = {}) {
   // 1. Read chart
   const state = await chart.getState();
@@ -352,11 +355,54 @@ export async function analyze({
 
   // Pick the highest-scoring NON-rejected setup
   scored.sort((a, b) => b.score.score - a.score.score);
-  const best   = scored.find(s => !s.rejection) ?? scored[0];
+  let best   = scored.find(s => !s.rejection) ?? scored[0];
   // Apply profile-aware verdict thresholds
-  const verdict = best
+  let verdict = best
     ? verdictFromScore(best.score.score, { tradeThreshold: minScore })
     : 'NO_TRADE';
+
+  // ─── DISCRETION OVERRIDE (Tier 7 +) — AI judgment layer ────────────────────
+  // If a setup was rejected OR scored below threshold, compute conviction
+  // from ALL signals. If conviction is high AND only soft filters tripped,
+  // allow the override.
+  let discretionOverride = null;
+  if (allowDiscretion && best) {
+    const wouldFire = !best.rejection && verdict === 'TRADE';
+    if (!wouldFire) {
+      try {
+        const convictionRes = await computeConviction({ result: { best, output: { setupScore: best.score.score, ticker: symbol }, htfBias, regime }, bars, symbol });
+        const reasons = best.rejection ?? [];
+        const ov = shouldOverride({
+          rejectionReasons: reasons,
+          conviction: convictionRes.conviction,
+          threshold: discretionThreshold,
+          originalScore: best.score.score,
+          minScore,
+        });
+        if (ov.override) {
+          // Allow the trade — clear rejection, force TRADE verdict
+          best.rejection = null;
+          verdict = 'TRADE';
+          discretionOverride = {
+            applied: true,
+            conviction: convictionRes.conviction,
+            breakdown: convictionRes.breakdown,
+            originalReasons: reasons,
+            originalScore: best.score.score,
+            reason: ov.reason,
+          };
+        } else {
+          // Still record the conviction even when not overriding (for transparency)
+          discretionOverride = {
+            applied: false,
+            conviction: convictionRes.conviction,
+            breakdown: convictionRes.breakdown,
+            blockReason: ov.reason,
+          };
+        }
+      } catch (e) { /* discretion is opt-in; failure shouldn't break analyze */ }
+    }
+  }
 
   // 5. Build output
   const bestLevel = pickBestLevel(levels, structure.price, structure.atr);
@@ -420,6 +466,12 @@ export async function analyze({
     finalInstruction = best.setup.direction === 'LONG'
       ? `Place stop at ${fmt.price(best.setup.invalidation)} BEFORE clicking buy. Take 50% off at T1, trail rest. Exit if 5 min after entry the trade hasn't moved your way.`
       : `Place stop at ${fmt.price(best.setup.invalidation)} BEFORE clicking sell. Cover 50% at T1, trail rest. Exit if 5 min after entry the trade hasn't moved your way.`;
+
+    // ─── Add discretion-override warning to instruction if applicable ────────
+    if (discretionOverride?.applied) {
+      finalInstruction = `🤖 DISCRETION OVERRIDE (conviction ${discretionOverride.conviction}/100). Original score ${discretionOverride.originalScore} was below threshold but multi-signal agreement is strong. Treat with extra caution — half-size suggested. ${finalInstruction}`;
+      mainRisk = `DISCRETION-overridden trade — soft filter(s) bypassed: ${discretionOverride.originalReasons?.join('; ') || 'score below threshold'}. Lower-probability than A+ trades.`;
+    }
   } else if (decision === 'WATCHLIST ONLY') {
     // Show the actual trade structure even for WATCHLIST so user can act if they choose
     entry        = fmt.price(best.setup.entry);
@@ -484,6 +536,7 @@ export async function analyze({
     symbol, tf,
     structure, levels, regime, setups, scored, best,
     htfBias,
+    discretionOverride,
     decision, verdict,
     score: setupScore,
     formatted,
