@@ -233,6 +233,13 @@ function cmdClose(id, exitPrice, reason) {
   t.outcome.closedAt   = new Date().toISOString();
   saveJournal(trades);
 
+  // ─── Tier 7.6 — feed outcome to bandit for Thompson sampling ─────────────
+  try {
+    import('./bandit.js').then(({ recordOutcome }) => {
+      if (status !== 'breakeven') recordOutcome(t.setup, t.symbol, status === 'won');
+    });
+  } catch { /* bandit may not exist */ }
+
   const verdict = status === 'won' ? `${C.green}✓ WON${C.reset}` : status === 'lost' ? `${C.red}✗ LOST${C.reset}` : `${C.yellow}— B/E${C.reset}`;
   console.log(`${verdict}  ${t.symbol} ${t.direction}  exit ${fmtPx(exit)}  ${colorize(fmt$(pnl), pnl)}  (${colorize(fmtR(rMult), rMult)})  reason: ${reason ?? 'manual'}`);
 }

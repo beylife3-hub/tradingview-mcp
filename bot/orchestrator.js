@@ -58,7 +58,7 @@ const C = { reset:'\x1b[0m', bold:'\x1b[1m', dim:'\x1b[2m', green:'\x1b[32m', re
 const PROCESSES = [
   { name: 'live-stream-coach', pattern: 'node bot/live-stream', argv: ['bot/live-stream.js', '--live', '--live-poll', '2', '--draw', PROFILE, '--risk', RISK] },
   { name: 'telegram-bot',      pattern: 'node bot/telegram-bot', argv: ['bot/telegram-bot.js'] },
-  { name: 'dashboard',         pattern: 'node bot/serve-dashboard', argv: ['bot/serve-dashboard.js'] },
+  { name: 'web-dashboard',     pattern: 'node bot/web-dashboard', argv: ['bot/web-dashboard.js'] },   // SSE live (Tier 7.8)
   { name: 'health-monitor',    pattern: 'node bot/health-monitor', argv: ['bot/health-monitor.js'] },
 ];
 
@@ -196,13 +196,13 @@ async function main() {
     await new Promise(r => setTimeout(r, 1500));
   }
 
-  // ─── Step 4: dashboard server ─────────────────────────────────────────────
-  console.log(`${C.cyan}Step 4: dashboard${C.reset}`);
+  // ─── Step 4: web dashboard (SSE live) ─────────────────────────────────────
+  console.log(`${C.cyan}Step 4: web-dashboard${C.reset}`);
   if (isRunning(PROCESSES[2].pattern)) {
     console.log(`  ${C.yellow}∎${C.reset} already running, skipping`);
   } else {
-    spawnChild('dashboard', PROCESSES[2].argv);
-    console.log(`  ${C.green}✓${C.reset} dashboard at http://localhost:8765/`);
+    spawnChild('web-dashboard', PROCESSES[2].argv);
+    console.log(`  ${C.green}✓${C.reset} live web dashboard at http://localhost:8766/`);
     await new Promise(r => setTimeout(r, 1000));
   }
 

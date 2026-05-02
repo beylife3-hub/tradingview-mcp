@@ -25,6 +25,8 @@ import { checkNewsRisk } from './news-filter.js';
 import { getMultiplier as getAdaptiveMultiplier, isAutoBanned as isAdaptiveBanned } from './adaptive-weights.js';
 import { detectAnomaly } from './anomaly-detector.js';
 import { adjustPositionSize } from './portfolio-risk.js';
+import { computeOrderFlow } from './order-flow.js';
+import { banditMultiplier } from './bandit.js';
 
 /**
  * Score a setup against current market state.
@@ -200,6 +202,42 @@ export function scoreSetup(setup, structure, levels, regime, bars, opts = {}) {
   // 0 → 1, 14 → 10. Linear: 1 + raw * (9/14)
   let score = Math.round((1 + raw * (9 / 14)) * 10) / 10;
 
+  // ─── 8. Order flow confluence (CVD divergence + wick absorption) ───────────
+  // Tier 7.3 — boost score when order-flow proxies agree with setup direction
+  if (bars && bars.length > 30) {
+    try {
+      const flow = computeOrderFlow(bars);
+      let flowBonus = 0;
+      const flowNotes = [];
+      if (flow.cvd?.divergence?.detected) {
+        const divDir = flow.cvd.divergence.type === 'bullish' ? 'LONG' : 'SHORT';
+        if (divDir === setup.direction) {
+          flowBonus += 0.5;
+          flowNotes.push(`+0.5 ${flow.cvd.divergence.type} CVD divergence agrees`);
+        }
+      }
+      if (flow.absorption?.absorbed) {
+        const absDir = flow.absorption.side === 'lower' ? 'LONG' : 'SHORT';
+        if (absDir === setup.direction) {
+          flowBonus += 0.3;
+          flowNotes.push(`+0.3 wick absorption agrees`);
+        }
+      }
+      if (flow.effortResult?.kind === 'continuation') {
+        flowBonus += 0.2;
+        flowNotes.push(`+0.2 effort/result = continuation`);
+      } else if (flow.effortResult?.kind === 'exhaustion') {
+        // Exhaustion at trend extreme = reversal hint
+        flowBonus += 0.1;
+        flowNotes.push(`+0.1 exhaustion bar (reversal hint)`);
+      }
+      if (flowBonus > 0) {
+        raw += flowBonus;
+        components.push({ name: 'Order flow', score: flowBonus, max: 1, note: flowNotes.join(', ') });
+      }
+    } catch { /* order-flow may fail on partial data */ }
+  }
+
   // ─── Adaptive multiplier — amplify/dampen based on YOUR recent expectancy ──
   // The bot learns from your journal: setups that have been winning lately
   // for you specifically get a small score boost; ones that have been losing
@@ -220,6 +258,21 @@ export function scoreSetup(setup, structure, levels, regime, bars, opts = {}) {
       components.push({ name: 'Adaptive (recent perf)', score: 0, max: 0, note: adaptiveNote });
     }
   } catch { /* adaptive state may not exist yet */ }
+
+  // ─── Bandit Thompson sampling — explore/exploit per-arm ──────────────────
+  // Tier 7.6 — multiplier based on Beta(wins, losses) sample.
+  // This is on top of adaptive expectancy: bandit handles exploration of
+  // less-traded setups, adaptive handles exploitation of known winners.
+  try {
+    const symbol = opts.symbol || '*';
+    const banditMult = banditMultiplier(setup.name, symbol);
+    if (Math.abs(banditMult - 1.0) > 0.05) {
+      score = Math.max(1, Math.min(10, score * Math.sqrt(banditMult)));   // sqrt to dampen — bandit is noisy
+      score = Math.round(score * 10) / 10;
+      components.push({ name: 'Bandit (Thompson)', score: 0, max: 0,
+        note: `${banditMult > 1 ? '+' : '-'}${(Math.abs(banditMult - 1) * 100).toFixed(0)}% Thompson sample` });
+    }
+  } catch { /* bandit state may not exist yet */ }
 
   return {
     score,

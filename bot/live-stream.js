@@ -21,6 +21,10 @@ import { drawAnalysis, clearBotShapes } from './draw-plan.js';
 import { getActivePositionFor, computePositionPnL } from './position-tracker.js';
 import { checkProtections } from './protections.js';
 import { getOptimalParams } from './auto-tune.js';
+import { checkVIXHalt } from './vix-integration.js';
+import { getTickerSentiment } from './news-sentiment.js';
+import { logDecision } from './audit-log.js';
+import { broadcast as webhookBroadcast } from './webhook-alerts.js';
 import { disconnect } from '../src/connection.js';
 import * as chart from '../src/core/chart.js';
 import * as data from '../src/core/data.js';
@@ -164,6 +168,38 @@ async function runDeepAnalysis() {
     return result;
   }
 
+  // ─── VIX HALT (Tier 7.1) ─────────────────────────────────────────────────
+  // Check fear gauge BEFORE other gates — VIX > 30 or +20%/hr → halt.
+  // VIX is cached 5 min so this is cheap.
+  const vixCheck = await checkVIXHalt({}).catch(() => ({ halted: false }));
+  if (vixCheck.halted) {
+    const vixHash = `vix|${vixCheck.vix?.value || 0}`;
+    if (CONFIG.changesOnly && vixHash === _prevHash && (Date.now() - _prevAt) < FORCED_REFRESH_MS) {
+      logInfo(`🚨 VIX halt — ${vixCheck.reason} (suppressed)`);
+      return result;
+    }
+    const vixMsg = `🚨 *VIX HALT* — \`${o.ticker}\`\n${vixCheck.reason}\n\n_All entries blocked._`;
+    await send(vixMsg);
+    logOk(`VIX halt: ${vixCheck.reason}`);
+    _prevHash = vixHash; _prevAt = Date.now();
+    return result;
+  }
+
+  // ─── NEWS SENTIMENT GATE (Tier 7.2) ──────────────────────────────────────
+  // For LONG signals only: check if recent ticker news is bearish enough to halt.
+  // Uses 10-min cache so this is cheap.
+  if (o.decision === 'LONG' && o.ticker) {
+    const sentiment = await getTickerSentiment(o.ticker).catch(() => null);
+    if (sentiment?.blocking) {
+      const newsHash = `news|${o.ticker}|${sentiment.avgScore}`;
+      if (!(CONFIG.changesOnly && newsHash === _prevHash && (Date.now() - _prevAt) < FORCED_REFRESH_MS)) {
+        await send(`📰 *News halt* — \`${o.ticker}\`\n${sentiment.reason}\n\n_LONG entry blocked._`);
+        _prevHash = newsHash; _prevAt = Date.now();
+      }
+      return result;
+    }
+  }
+
   // ─── PROTECTION LOCKS ────────────────────────────────────────────────────
   // Check circuit breakers BEFORE acting on any signal.
   const lock = checkProtections({
@@ -231,6 +267,28 @@ async function runDeepAnalysis() {
     _prevAt = Date.now();
   } else {
     logWarn('Send failed');
+  }
+
+  // ─── AUDIT LOG (Tier 7.5) — every decision recorded immutably ────────────
+  try {
+    logDecision({
+      decision: o.decision,
+      score:    o.setupScore,
+      symbol:   o.ticker,
+      tf:       o.timeframe,
+      setup:    result.best?.setup?.name,
+      direction: result.best?.setup?.direction,
+      bias:     o.bias,
+      regime:   result.regime?.type,
+      htfBias:  result.htfBias?.direction,
+      reasons:  o.reasons,
+      adaptiveMult: result.best?.score?.adaptiveMultiplier,
+    });
+  } catch (e) { logWarn(`Audit log: ${e.message}`); }
+
+  // ─── WEBHOOK BROADCAST (Tier 7.7) — Discord + Slack ──────────────────────
+  if (o.decision === 'LONG' || o.decision === 'SHORT' || o.decision === 'WATCHLIST ONLY') {
+    try { await webhookBroadcast(result); } catch { /* best-effort */ }
   }
 
   // Draw on chart if --draw enabled
