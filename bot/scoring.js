@@ -22,6 +22,7 @@
 import { atr, ema } from './engine.js';
 import { computeVolumeProfile, isInChopZone } from './volume-profile.js';
 import { checkNewsRisk } from './news-filter.js';
+import { getMultiplier as getAdaptiveMultiplier, isAutoBanned as isAdaptiveBanned } from './adaptive-weights.js';
 
 /**
  * Score a setup against current market state.
@@ -195,7 +196,28 @@ export function scoreSetup(setup, structure, levels, regime, bars, opts = {}) {
 
   // Normalize 0-14 raw → 1-10 scale
   // 0 → 1, 14 → 10. Linear: 1 + raw * (9/14)
-  const score = Math.round((1 + raw * (9 / 14)) * 10) / 10;
+  let score = Math.round((1 + raw * (9 / 14)) * 10) / 10;
+
+  // ─── Adaptive multiplier — amplify/dampen based on YOUR recent expectancy ──
+  // The bot learns from your journal: setups that have been winning lately
+  // for you specifically get a small score boost; ones that have been losing
+  // get a small dampen. Bayesian shrinkage prevents overreacting to small N.
+  let adaptiveMult = 1.0;
+  let adaptiveNote = '';
+  try {
+    const symbol = opts.symbol || '*';
+    const regimeKey = regime?.type || 'all';
+    adaptiveMult = getAdaptiveMultiplier(setup.name, symbol, regimeKey);
+    if (Math.abs(adaptiveMult - 1.0) > 0.05) {
+      adaptiveNote = adaptiveMult > 1.0
+        ? `+${((adaptiveMult - 1) * 100).toFixed(0)}% from positive recent expectancy`
+        : `-${((1 - adaptiveMult) * 100).toFixed(0)}% from negative recent expectancy`;
+      // Apply multiplier to score (clamped to keep within 1-10)
+      score = Math.max(1, Math.min(10, score * adaptiveMult));
+      score = Math.round(score * 10) / 10;
+      components.push({ name: 'Adaptive (recent perf)', score: 0, max: 0, note: adaptiveNote });
+    }
+  } catch { /* adaptive state may not exist yet */ }
 
   return {
     score,
@@ -206,6 +228,7 @@ export function scoreSetup(setup, structure, levels, regime, bars, opts = {}) {
     suggestedTarget2,
     rrEstimate,
     stopDist,
+    adaptiveMultiplier: adaptiveMult,
   };
 }
 
@@ -295,6 +318,12 @@ export function applyStrictFilters({
     if (news.blocked) {
       reasons.push(`News risk: ${news.reason}`);
     }
+  }
+
+  // Adaptive auto-ban — setup with strongly negative recent expectancy
+  const adaptiveBan = isAdaptiveBanned(setup.name, structure?.symbol || '*');
+  if (adaptiveBan.banned) {
+    reasons.push(`Adaptive ban: ${adaptiveBan.reason}`);
   }
 
   // Volume Profile chop zone — within 0.1% of POC = no edge in default+conservative
