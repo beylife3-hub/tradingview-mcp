@@ -633,15 +633,32 @@ export function detectAll(bars, levels, structure, opts = {}) {
       ? { proximityPct: 0.012, minWickPct: 0.40, minTouches: 1 }
       : {};
 
+  // ─── Regime-conditional whitelist ─────────────────────────────────────────
+  // Different regimes call for different setups. Trading the wrong setup
+  // for the regime is the single largest losing category in Freqtrade Edge
+  // analysis. Aggressive/yolo profiles bypass this filter.
+  const allRegimes = opts.aggressive || opts.yolo;
+  const regime = opts.regime || null;
+  const regimeOK = (regime, allowedRegimes) => allRegimes || !regime || allowedRegimes.includes(regime);
+
   const detectors = [
-    () => detectSweepReclaim(bars, sweep),
-    () => detectVWAPBounce(bars, structure, vwap),
+    // Sweep+reclaim works in any directional regime (not parabolic chop)
+    () => regimeOK(regime, ['trending-up', 'trending-down', 'ranging']) ? detectSweepReclaim(bars, sweep) : null,
+    // VWAP bounce only in trending sessions (need clear directional bias for "first touch")
+    () => regimeOK(regime, ['trending-up', 'trending-down']) ? detectVWAPBounce(bars, structure, vwap) : null,
+    // ORB only in first 90 min (can't filter by time here, but detector itself checks)
     () => detectORB(bars, levels, orb),
-    () => detectTrendPullback(bars, levels, structure, pullback),
-    () => detectRangeReversal(bars, levels, range),
-    () => detectFlag(bars),
+    // Trend pullback only in trending regimes
+    () => regimeOK(regime, ['trending-up', 'trending-down']) ? detectTrendPullback(bars, levels, structure, pullback) : null,
+    // Range reversal ONLY in ranging (using it in trends is the most common loser)
+    () => regimeOK(regime, ['ranging']) ? detectRangeReversal(bars, levels, range) : null,
+    // Flag is a continuation pattern — needs trending regime
+    () => regimeOK(regime, ['trending-up', 'trending-down']) ? detectFlag(bars) : null,
+    // Double top/bottom = reversal pattern, works in any regime
     () => detectDoubleTopBottom(bars),
+    // Gap fill needs a real gap (only fires when one exists)
     () => detectGapFill(bars),
+    // EOD fade only in last hour (detector checks time)
     () => detectEODFade(bars, structure),
   ];
   const results = [];

@@ -315,10 +315,11 @@ export async function analyze({
   const levels    = extractKeyLevels(bars, structure);
   const regime    = classifyRegime(bars);
 
-  // 4. Detect setups (pass profile-aware detector options)
+  // 4. Detect setups (pass profile-aware detector options + current regime)
   const detectorOpts = {
     aggressive: profile === 'aggressive' || profile === 'yolo',
     yolo:       profile === 'yolo',
+    regime:     regime?.type,                    // for regime-conditional whitelisting
   };
   const setups = detectAll(bars, levels, structure, detectorOpts);
 
