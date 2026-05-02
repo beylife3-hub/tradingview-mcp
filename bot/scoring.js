@@ -20,6 +20,8 @@
  */
 
 import { atr, ema } from './engine.js';
+import { computeVolumeProfile, isInChopZone } from './volume-profile.js';
+import { checkNewsRisk } from './news-filter.js';
 
 /**
  * Score a setup against current market state.
@@ -284,6 +286,30 @@ export function applyStrictFilters({
     const cap = stopCapPct / 100;
     if (stopDistPct > cap) {
       reasons.push(`Stop ${(stopDistPct * 100).toFixed(2)}% wide — exceeds ${stopCapPct}% sanity cap`);
+    }
+  }
+
+  // News risk — block trades around scheduled events (always rejects)
+  if (bars && bars.length > 25) {
+    const news = checkNewsRisk(bars);
+    if (news.blocked) {
+      reasons.push(`News risk: ${news.reason}`);
+    }
+  }
+
+  // Volume Profile chop zone — within 0.1% of POC = no edge in default+conservative
+  if (bars && bars.length > 50 && profile !== 'aggressive' && profile !== 'yolo') {
+    const vp = computeVolumeProfile(bars.slice(-100));
+    if (vp && isInChopZone(setup.entry, vp.poc)) {
+      reasons.push(`Within 0.1% of Volume Profile POC (${vp.poc.toFixed(4)}) — chop zone, no edge`);
+    }
+  }
+
+  // Spread check — if structure has bid/ask, reject if spread > 0.05% of price
+  if (structure?.bid && structure?.ask && setup.entry) {
+    const spread = (structure.ask - structure.bid) / setup.entry;
+    if (spread > 0.0005) {
+      reasons.push(`Bid/ask spread ${(spread * 100).toFixed(3)}% > 0.05% — slippage will kill edge`);
     }
   }
 

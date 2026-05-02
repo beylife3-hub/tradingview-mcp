@@ -119,7 +119,7 @@ const L = {
 
 // ─── Build current structure object ──────────────────────────────────────────
 
-function buildStructure(bars) {
+function buildStructure(bars, quote) {
   const closes = bars.map(b => b.close);
   const last = bars[bars.length - 1];
 
@@ -130,9 +130,23 @@ function buildStructure(bars) {
   const rsiSeries = rsi(closes, 14);
   const vwapResult = computeVWAP(bars, Math.min(78, bars.length));
 
+  // Anchored VWAP from PDH (highest high in last 50 bars) — useful for fade entries
+  let avwapPivot = null;
+  let pivotIdx = bars.length - 1;
+  let pivotHigh = -Infinity;
+  for (let i = Math.max(0, bars.length - 50); i < bars.length; i++) {
+    if (bars[i].high > pivotHigh) { pivotHigh = bars[i].high; pivotIdx = i; }
+  }
+  if (pivotIdx < bars.length - 5) {
+    const avwapResult = computeVWAP(bars.slice(pivotIdx));
+    avwapPivot = avwapResult?.vwap ?? null;
+  }
+
   return {
     price: last.close,
     open: last.open, high: last.high, low: last.low,
+    bid: quote?.bid ?? null,
+    ask: quote?.ask ?? null,
     ema20:  e20[e20.length - 1],
     ema50:  e50[e50.length - 1],
     ema200: e200[e200.length - 1],
@@ -143,6 +157,8 @@ function buildStructure(bars) {
       upper1: vwapResult.upper1, lower1: vwapResult.lower1,
       upper2: vwapResult.upper2, lower2: vwapResult.lower2,
     } : null,
+    avwapPivot,
+    pivotIdx,
   };
 }
 
@@ -292,8 +308,10 @@ export async function analyze({
     htfBias = await fetchHTFBias(tf);
   }
 
-  // 3. Build structure + extract levels
-  const structure = buildStructure(bars);
+  // 3. Build structure + extract levels (also fetch quote for bid/ask spread check)
+  let quote = null;
+  try { quote = await data.getQuote(); } catch { /* not all feeds expose bid/ask */ }
+  const structure = buildStructure(bars, quote);
   const levels    = extractKeyLevels(bars, structure);
   const regime    = classifyRegime(bars);
 
