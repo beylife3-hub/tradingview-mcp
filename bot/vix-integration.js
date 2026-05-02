@@ -21,9 +21,9 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CACHE_PATH = join(__dirname, 'journal', 'vix-state.json');
 
-const DEFAULT_SPIKE_LEVEL = 30;        // VIX > 30 = halt
-const DEFAULT_SPIKE_PCT   = 0.20;      // > 20% rise in last hour = halt
-const CACHE_TTL_MS        = 5 * 60_000;
+const DEFAULT_SPIKE_LEVEL = 30;         // VIX > 30 = halt
+const DEFAULT_SPIKE_PCT   = 0.20;       // > 20% rise in last hour = halt
+const CACHE_TTL_MS        = 15 * 60_000; // 15 min — VIX moves slowly, less chart-switching
 
 function loadCache() {
   try { if (!existsSync(CACHE_PATH)) return null; return JSON.parse(readFileSync(CACHE_PATH, 'utf-8')); }
@@ -54,6 +54,24 @@ export async function fetchVIX({ force = false } = {}) {
     originalSymbol = state.symbol;
     originalTf = state.resolution;
 
+    // Don't switch if we're already on TVC:VIX (e.g., user is staring at it)
+    if (originalSymbol === 'TVC:VIX') {
+      const ohlcv = await data.getOhlcv({ count: 60, summary: false });
+      if (!ohlcv.success || !ohlcv.bars?.length) throw new Error('VIX bars unavailable');
+      const bars = ohlcv.bars;
+      const currentVix = bars[bars.length - 1].close;
+      const hourAgoVix = bars.length >= 60 ? bars[bars.length - 60].close : bars[0].close;
+      const result = {
+        value: Number(currentVix.toFixed(2)),
+        hourAgo: Number(hourAgoVix.toFixed(2)),
+        oneHourPctChange: Number(((currentVix - hourAgoVix) / hourAgoVix).toFixed(4)),
+        fetchedAt: new Date().toISOString(),
+        cached: false,
+      };
+      saveCache(result);
+      return result;
+    }
+
     await chart.setSymbol({ symbol: 'TVC:VIX' });
     await new Promise(r => setTimeout(r, 1500));
 
@@ -68,9 +86,18 @@ export async function fetchVIX({ force = false } = {}) {
     const hourAgoVix = hourAgoBars.close;
     const oneHourPctChange = (currentVix - hourAgoVix) / hourAgoVix;
 
-    // Restore chart
-    await chart.setSymbol({ symbol: originalSymbol });
-    await new Promise(r => setTimeout(r, 1500));
+    // Restore chart — VERIFIED. Loop up to 3 times if it didn't take.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await chart.setSymbol({ symbol: originalSymbol });
+      await new Promise(r => setTimeout(r, 1500));
+      const newState = await chart.getState();
+      if (newState.symbol === originalSymbol) break;
+      console.error(`[vix] restore attempt ${attempt + 1} failed, retrying...`);
+    }
+    if (originalTf) {
+      await chart.setTimeframe({ timeframe: originalTf });
+      await new Promise(r => setTimeout(r, 1200));
+    }
 
     const result = {
       value: Number(currentVix.toFixed(2)),
@@ -82,9 +109,16 @@ export async function fetchVIX({ force = false } = {}) {
     saveCache(result);
     return result;
   } catch (e) {
-    // Best-effort restore
-    if (originalSymbol) {
-      try { await chart.setSymbol({ symbol: originalSymbol }); } catch {}
+    // Best-effort restore — try harder
+    if (originalSymbol && originalSymbol !== 'TVC:VIX') {
+      try {
+        await chart.setSymbol({ symbol: originalSymbol });
+        await new Promise(r => setTimeout(r, 1500));
+        if (originalTf) {
+          await chart.setTimeframe({ timeframe: originalTf });
+          await new Promise(r => setTimeout(r, 1200));
+        }
+      } catch {}
     }
     return null;
   }

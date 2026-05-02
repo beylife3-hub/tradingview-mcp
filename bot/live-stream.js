@@ -64,6 +64,8 @@ const CONFIG = {
   movePct:     Number(args['--move-pct'] ?? 0.0015), // trigger deep analysis on 0.15% move
   teach:       !('--no-teach' in args),
   draw:        '--draw' in args,                  // draw BUY/SELL/STOP/T1 on chart every deep analysis
+  noVix:       '--no-vix' in args,                // skip VIX halt check (avoids 5-min chart switch)
+  noHTF:       '--no-htf' in args,                // skip HTF bias (avoids per-tick chart switch)
 };
 
 let _prevHash = null;
@@ -105,6 +107,7 @@ async function runDeepAnalysis() {
       minScore, targetRR,
       stopCapPct:  CONFIG.stopCapPct,
       profile:     CONFIG.profile,
+      noHTF:       CONFIG.noHTF,
     });
     if (usedTuned) result._tuned = { minScore, targetRR };
   } catch (e) {
@@ -170,8 +173,10 @@ async function runDeepAnalysis() {
 
   // ─── VIX HALT (Tier 7.1) ─────────────────────────────────────────────────
   // Check fear gauge BEFORE other gates — VIX > 30 or +20%/hr → halt.
-  // VIX is cached 5 min so this is cheap.
-  const vixCheck = await checkVIXHalt({}).catch(() => ({ halted: false }));
+  // VIX is cached 15 min so this is cheap. Skip entirely with --no-vix.
+  const vixCheck = CONFIG.noVix
+    ? { halted: false }
+    : await checkVIXHalt({}).catch(() => ({ halted: false }));
   if (vixCheck.halted) {
     const vixHash = `vix|${vixCheck.vix?.value || 0}`;
     if (CONFIG.changesOnly && vixHash === _prevHash && (Date.now() - _prevAt) < FORCED_REFRESH_MS) {
